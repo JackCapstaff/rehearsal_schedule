@@ -1,0 +1,177 @@
+{% extends "base.html" %}
+{% set title = "Admin" %}
+{% set subtitle = "Manage ensembles and users" %}
+
+{% block content %}
+  <div class="card">
+    <div style="display:flex; justify-content:space-between; align-items:baseline; gap:12px;">
+      <div>
+        <div class="small">Logged in as</div>
+        <strong>{{ user.email }}</strong>
+      </div>
+      <div>
+        <a class="btn secondary" href="{{ url_for('my_view') }}">Back to My</a>
+        <a class="btn secondary" href="{{ url_for('logout_view') }}">Logout</a>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <strong>Ensembles</strong>
+
+    <form method="post" action="{{ url_for('admin_create_ensemble') }}" style="margin-top:10px; display:flex; gap:10px;">
+      <input name="name" placeholder="New ensemble name" required style="flex:1; padding:10px;">
+      <button class="btn" type="submit">Create</button>
+    </form>
+
+    <div style="margin-top:12px;">
+      {% for e in ensembles %}
+        <div style="display:flex; gap:10px; align-items:center; margin:8px 0;">
+          <div style="flex:1;">
+            <strong>{{ e.name }}</strong>
+            <span class="small">({{ e.id }})</span>
+          </div>
+
+          <form method="post" action="{{ url_for('admin_rename_ensemble', ensemble_id=e.id) }}" style="display:flex; gap:8px;">
+            <input name="name" value="{{ e.name }}" required style="padding:8px;">
+            <button class="btn secondary" type="submit">Rename</button>
+          </form>
+
+          <form method="post" action="{{ url_for('admin_delete_ensemble', ensemble_id=e.id) }}"
+                onsubmit="return confirm('Delete ensemble {{ e.name }}? This also removes memberships.');">
+            <button class="btn secondary" type="submit">Delete</button>
+          </form>
+        </div>
+      {% endfor %}
+    </div>
+  </div>
+
+    <div class="card">
+    <strong>Schedules</strong>
+
+    <form method="post" action="{{ url_for('admin_create_schedule') }}"
+          style="margin-top:10px; display:flex; gap:10px; flex-wrap:wrap;">
+      <input name="name" placeholder="New schedule name (e.g. Spring 2026)" required style="flex:1; min-width:240px; padding:10px;">
+      <select name="ensemble_id" required style="padding:10px;">
+        <option value="">Select ensemble…</option>
+        {% for e in ensembles %}
+          <option value="{{ e.id }}">{{ e.name }}</option>
+        {% endfor %}
+      </select>
+      <button class="btn" type="submit">Create schedule</button>
+    </form>
+
+    {% if schedules %}
+      <div style="margin-top:14px;">
+        {% for s in schedules %}
+          <div style="border-top:1px solid #eee; padding-top:10px; margin-top:10px; display:flex; justify-content:space-between; gap:12px; align-items:baseline;">
+            <div>
+              <strong>{{ s.name }}</strong>
+              <div class="small">
+                Ensemble: {{ ens_by_id.get(s.ensemble_id, {"name": s.ensemble_id}).name }}
+                · Status: <strong>{{ s.status }}</strong>
+              </div>
+            </div>
+
+            <div style="display:flex; gap:8px; flex-wrap:wrap;">
+              <a class="btn secondary" href="{{ url_for('admin_edit_schedule', schedule_id=s.id) }}">Edit</a>
+              <a class="btn secondary" href="{{ url_for('schedule_view', schedule_id=s.id) }}">View</a>
+
+              {% if s.status == "draft" %}
+                <form method="post" action="{{ url_for('admin_set_schedule_status', schedule_id=s.id) }}">
+                  <input type="hidden" name="status" value="published">
+                  <button class="btn" type="submit">Publish</button>
+                </form>
+              {% else %}
+                <form method="post" action="{{ url_for('admin_set_schedule_status', schedule_id=s.id) }}">
+                  <input type="hidden" name="status" value="draft">
+                  <button class="btn secondary" type="submit">Unpublish</button>
+                </form>
+              {% endif %}
+
+              <form method="post" action="{{ url_for('admin_delete_schedule', schedule_id=s.id) }}"
+                    onsubmit="return confirm('Delete schedule {{ s.name }}?');">
+                <button class="btn secondary" type="submit">Delete</button>
+              </form>
+            </div>
+          </div>
+        {% endfor %}
+      </div>
+    {% else %}
+      <div class="small" style="margin-top:12px;">No schedules yet.</div>
+    {% endif %}
+  </div>
+
+
+  <div class="card">
+    <strong>Users</strong>
+
+    <div class="small" style="margin-top:6px;">
+      Promote yourself automatically by setting <code>ADMIN_EMAIL</code> in Azure App Settings.
+    </div>
+
+    <div style="margin-top:12px;">
+      {% for u in users %}
+        <div style="border-top:1px solid #eee; padding-top:10px; margin-top:10px;">
+          <div style="display:flex; justify-content:space-between; gap:12px; align-items:baseline;">
+            <div>
+              <strong>{{ u.email }}</strong>
+              {% if u.is_admin %}
+                <span class="small" style="margin-left:8px;">(admin)</span>
+              {% endif %}
+            </div>
+
+            <form method="post" action="{{ url_for('admin_set_admin', user_id=u.id) }}" style="display:flex; gap:8px;">
+              {% if u.is_admin %}
+                <input type="hidden" name="is_admin" value="false">
+                <button class="btn secondary" type="submit">Make member</button>
+              {% else %}
+                <input type="hidden" name="is_admin" value="true">
+                <button class="btn secondary" type="submit">Make admin</button>
+              {% endif %}
+            </form>
+          </div>
+
+          <div class="small" style="margin-top:8px;">Memberships</div>
+          <ul style="margin-top:6px;">
+            {% for m in (mem_by_user.get(u.id) or []) %}
+              <li style="margin:4px 0;">
+                {{ ens_by_id.get(m.ensemble_id, {"name": m.ensemble_id}).name }}
+                <span class="small">({{ m.role or "member" }}, {{ m.status or "active" }})</span>
+                <form method="post" action="{{ url_for('admin_membership_remove') }}" style="display:inline;">
+                  <input type="hidden" name="user_id" value="{{ u.id }}">
+                  <input type="hidden" name="ensemble_id" value="{{ m.ensemble_id }}">
+                  <button class="btn secondary" type="submit" style="padding:4px 8px;">Remove</button>
+                </form>
+              </li>
+            {% endfor %}
+          </ul>
+
+          <form method="post" action="{{ url_for('admin_membership_upsert') }}"
+                style="margin-top:10px; display:flex; gap:10px; flex-wrap:wrap;">
+            <input type="hidden" name="user_id" value="{{ u.id }}">
+
+            <select name="ensemble_id" required style="padding:10px;">
+              <option value="">Add to ensemble…</option>
+              {% for e in ensembles %}
+                <option value="{{ e.id }}">{{ e.name }}</option>
+              {% endfor %}
+            </select>
+
+            <select name="role" style="padding:10px;">
+              <option value="member">member</option>
+              <option value="admin">admin (ensemble)</option>
+            </select>
+
+            <select name="status" style="padding:10px;">
+              <option value="active">active</option>
+              <option value="pending">pending</option>
+            </select>
+
+            <button class="btn" type="submit">Add / Update</button>
+          </form>
+        </div>
+      {% endfor %}
+    </div>
+  </div>
+{% endblock %}

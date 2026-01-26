@@ -1,0 +1,8 @@
+flask==3.0.3
+flask_sqlalchemy==3.1.1
+pandas==2.2.2
+numpy==2.0.1
+openpyxl==3.1.5
+opentelemetry-api
+opentelemetry-sdk
+opentelemetry-instrumentation-flask

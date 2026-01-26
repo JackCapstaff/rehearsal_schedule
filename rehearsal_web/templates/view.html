@@ -1,0 +1,123 @@
+{% extends "base.html" %}
+{% set title = "Schedule" %}
+{% set subtitle = "Public view" %}
+
+{% block content %}
+  <div class="card">
+    <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px;">
+      <div>
+        <h2 style="margin:0;">{{ ensemble_name }}</h2>
+        {% if generated_at %}
+          <div class="small">Last generated: {{ generated_at }}</div>
+        {% endif %}
+      </div>
+      <div style="display:flex; gap:8px;">
+        <a class="btn" href="{{ url_for('my_view') }}">
+          <i class="bi bi-arrow-left"></i> Back to Calendar
+        </a>
+        <a class="btn secondary" href="{{ url_for('download_schedule_pdf', schedule_id=schedule_id) }}">
+          <i class="bi bi-file-pdf"></i> Download PDF
+        </a>
+        {% if user and user.is_admin %}
+          <a class="btn" href="{{ url_for('admin_edit_schedule', schedule_id=schedule_id) }}">
+            <i class="bi bi-pencil"></i> Edit Schedule
+          </a>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+
+  {% if not has_schedule %}
+    <div class="card">
+      <strong>No schedule published yet.</strong>
+      <div class="small">The editor needs to run allocation + generate schedule.</div>
+    </div>
+  {% else %}
+
+    {% set by_reh = {} %}
+    {% for row in timed %}
+      {% set r = row["Rehearsal"] %}
+      {% if r not in by_reh %}
+        {% set _ = by_reh.update({r: []}) %}
+      {% endif %}
+      {% set _ = by_reh[r].append(row) %}
+    {% endfor %}
+
+    <div class="accordion" id="rehearsalAccordion">
+    {% for r in by_reh|dictsort %}
+      {% set reh_num = r[0] %}
+      {% set rows = r[1] %}
+      <div class="accordion-item" id="rehearsal-{{ reh_num }}">
+        <h2 class="accordion-header">
+          <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" 
+                  data-bs-target="#collapse-{{ reh_num }}" aria-expanded="false" 
+                  aria-controls="collapse-{{ reh_num }}" id="btn-rehearsal-{{ reh_num }}">
+            <strong>Rehearsal {{ reh_num }}{% if rows and rows[0]["Date"] %} - {{ rows[0]["Date"]|uk_date_format }}{% endif %}</strong>
+          </button>
+        </h2>
+        <div id="collapse-{{ reh_num }}" class="accordion-collapse collapse" 
+             data-bs-parent="#rehearsalAccordion">
+          <div class="accordion-body p-0">
+            <table style="margin:0; width:100%;">
+              <thead>
+                <tr>
+                  <th style="width:120px;">Time</th>
+                  <th>Item</th>
+                  <th style="width:220px;">Break</th>
+                </tr>
+              </thead>
+              <tbody>
+                {% for row in rows|sort(attribute="Time in Rehearsal") %}
+                  <tr>
+                    <td><strong>{{ row["Time in Rehearsal"] }}</strong></td>
+                    <td>
+                      {% if row["Title"] == "Break" %}
+                        <span class="pill">Break</span>
+                      {% else %}
+                        {{ row["Title"] }}
+                      {% endif %}
+                    </td>
+                    <td class="small">
+                      {% if row["Break Start (HH:MM)"] %}
+                        {{ row["Break Start (HH:MM)"] }} – {{ row["Break End (HH:MM)"] }}
+                      {% endif %}
+                    </td>
+                  </tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    {% endfor %}
+    </div>
+  {% endif %}
+  
+  <script>
+    // Scroll to and expand specific rehearsal if ?reh= parameter is present
+    const urlParams = new URLSearchParams(window.location.search);
+    const rehNum = urlParams.get('reh');
+    if (rehNum) {
+      setTimeout(() => {
+        const targetButton = document.getElementById('btn-rehearsal-' + rehNum);
+        const targetCollapse = document.getElementById('collapse-' + rehNum);
+        const targetAccordionItem = document.getElementById('rehearsal-' + rehNum);
+        
+        if (targetButton && targetCollapse && targetAccordionItem) {
+          // Expand the accordion item
+          const bsCollapse = new bootstrap.Collapse(targetCollapse, { toggle: true });
+          
+          // Update button state
+          targetButton.classList.remove('collapsed');
+          targetButton.setAttribute('aria-expanded', 'true');
+          
+          // Scroll to the item with highlight
+          targetAccordionItem.scrollIntoView({ behavior: 'smooth', block: 'start' });
+          targetAccordionItem.style.boxShadow = '0 4px 20px rgba(13, 110, 253, 0.3)';
+          targetAccordionItem.style.border = '2px solid #0d6efd';
+          targetAccordionItem.style.borderRadius = '0.25rem';
+        }
+      }, 300);
+    }
+  </script>
+{% endblock %}

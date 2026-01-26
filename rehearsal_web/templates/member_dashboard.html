@@ -1,0 +1,384 @@
+{% extends "base.html" %}
+{% block title %}Member Dashboard{% endblock %}
+
+{% block content %}
+<div class="container mt-4">
+    <!-- User Info Header -->
+    <div class="card mb-4">
+        <div style="display:flex; justify-content:space-between; align-items:baseline; gap:12px;">
+            <div>
+                <div class="small">Logged in as</div>
+                <strong>{{ user.email }}</strong>
+                {% if user.is_admin %}
+                    <div class="small" style="margin-top:4px;">Admin access enabled</div>
+                {% endif %}
+            </div>
+            <div style="display:flex; gap:8px;">
+                {% if user.is_admin %}
+                    <a class="btn btn-primary btn-sm" href="{{ url_for('admin_home') }}">
+                        <i class="bi bi-gear"></i> Admin
+                    </a>
+                {% endif %}
+                <a class="btn btn-secondary btn-sm" href="{{ url_for('logout_view') }}">
+                    <i class="bi bi-box-arrow-right"></i> Logout
+                </a>
+            </div>
+        </div>
+    </div>
+    
+    <h1>My Rehearsals</h1>
+    
+    <!-- View Toggle and Download -->
+    <div class="d-flex justify-content-between align-items-center mb-3 flex-wrap gap-2">
+        <div class="btn-group" role="group">
+            <button type="button" class="btn btn-outline-primary" id="listViewBtn">
+                <i class="bi bi-list-ul"></i> List View
+            </button>
+            <button type="button" class="btn btn-outline-primary active" id="calendarViewBtn">
+                <i class="bi bi-calendar3"></i> Calendar View
+            </button>
+        </div>
+        <a href="{{ url_for('download_my_schedule_pdf') }}" class="btn btn-success">
+            <i class="bi bi-file-pdf"></i> Download My Schedule
+        </a>
+    </div>
+    
+    <!-- List View -->
+    <div id="listView" class="d-none">
+        <div class="accordion" id="rehearsalAccordion">
+            <!-- Populated by JavaScript -->
+        </div>
+        <div id="listViewLoading" class="text-center py-4">
+            <div class="spinner-border" role="status">
+                <span class="visually-hidden">Loading...</span>
+            </div>
+        </div>
+        <div id="listViewEmpty" class="alert alert-info d-none">
+            No upcoming rehearsals found.
+        </div>
+    </div>
+    
+    <!-- Calendar View -->
+    <div id="calendarView">
+        <div class="row mb-3">
+            <div class="col text-center">
+                <button class="btn btn-sm btn-outline-secondary" id="prevMonth">
+                    <i class="bi bi-chevron-left"></i>
+                </button>
+                <span class="mx-3 fw-bold" id="calendarMonths"></span>
+                <button class="btn btn-sm btn-outline-secondary" id="nextMonth">
+                    <i class="bi bi-chevron-right"></i>
+                </button>
+            </div>
+        </div>
+        <div class="row g-3">
+            <div class="col-12">
+                <div id="calendar1"></div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<style>
+.calendar-month {
+    border: 1px solid #dee2e6;
+    border-radius: 0.25rem;
+    padding: 1rem;
+    background-color: white;
+}
+
+.calendar-header {
+    text-align: center;
+    font-weight: bold;
+    margin-bottom: 1rem;
+    font-size: 1.1rem;
+}
+
+.calendar-grid {
+    display: grid;
+    grid-template-columns: repeat(7, 1fr);
+    gap: 2px;
+    background-color: #e9ecef;
+    border: 1px solid #e9ecef;
+}
+
+.calendar-day-header {
+    text-align: center;
+    font-weight: bold;
+    padding: 0.5rem 0.25rem;
+    background-color: #f8f9fa;
+    font-size: 0.75rem;
+}
+
+.calendar-day {
+    min-height: 70px;
+    max-height: 100px;
+    padding: 0.25rem;
+    background-color: #fff;
+    position: relative;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+}
+
+.calendar-day.other-month {
+    background-color: #f8f9fa;
+    color: #6c757d;
+}
+
+.calendar-day-number {
+    font-size: 0.75rem;
+    font-weight: 600;
+    margin-bottom: 0.125rem;
+    flex-shrink: 0;
+}
+
+.calendar-rehearsals-container {
+    flex: 1;
+    overflow-y: auto;
+    overflow-x: hidden;
+    min-height: 0;
+}
+
+.calendar-rehearsal {
+    font-size: 0.65rem;
+    line-height: 1.2;
+    padding: 0.125rem 0.25rem;
+    margin-bottom: 0.125rem;
+    border-radius: 0.2rem;
+    background-color: #0d6efd;
+    color: white;
+    text-decoration: none;
+    display: block;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    transition: background-color 0.2s;
+}
+
+.calendar-rehearsal:hover {
+    background-color: #0b5ed7;
+    color: white;
+    text-decoration: none;
+}
+
+/* Show scrollbar only on hover for cleaner look */
+.calendar-rehearsals-container::-webkit-scrollbar {
+    width: 4px;
+}
+
+.calendar-rehearsals-container::-webkit-scrollbar-track {
+    background: transparent;
+}
+
+.calendar-rehearsals-container::-webkit-scrollbar-thumb {
+    background: #cbd5e0;
+    border-radius: 2px;
+}
+
+.calendar-rehearsals-container:hover::-webkit-scrollbar-thumb {
+    background: #a0aec0;
+}
+
+/* Mobile: Stack calendars vertically */
+@media (max-width: 767.98px) {
+    .calendar-day {
+        min-height: 60px;
+        max-height: 80px;
+    }
+    
+    .calendar-rehearsal {
+        font-size: 0.6rem;
+        padding: 0.1rem 0.2rem;
+    }
+}
+
+.rehearsal-card {
+    border-left: 4px solid #0d6efd;
+}
+
+.rehearsal-item {
+    padding: 0.5rem;
+    border-bottom: 1px solid #e9ecef;
+}
+
+.rehearsal-item:last-child {
+    border-bottom: none;
+}
+
+.rehearsal-item.break {
+    background-color: #f8f9fa;
+    font-style: italic;
+}
+</style>
+
+<script>
+console.log('Member dashboard JavaScript loaded');
+
+let rehearsalsData = [];
+let currentMonthOffset = 0;
+
+// Load rehearsals data
+async function loadRehearsals() {
+    console.log('loadRehearsals() called');
+    try {
+        console.log('Fetching /api/member/rehearsals...');
+        const response = await fetch('/api/member/rehearsals');
+        rehearsalsData = await response.json();
+        console.log('Loaded rehearsals data:', rehearsalsData);
+        renderListView();
+        renderCalendarView();
+    } catch (error) {
+        console.error('Error loading rehearsals:', error);
+    }
+}
+
+// Render List View
+function renderListView() {
+    const accordion = document.getElementById('rehearsalAccordion');
+    const loading = document.getElementById('listViewLoading');
+    const empty = document.getElementById('listViewEmpty');
+    
+    loading.classList.add('d-none');
+    
+    if (rehearsalsData.length === 0) {
+        empty.classList.remove('d-none');
+        return;
+    }
+    
+    empty.classList.add('d-none');
+    
+    accordion.innerHTML = rehearsalsData.map((reh, index) => {
+        const date = new Date(reh.date);
+        const day = date.getDate();
+        const suffix = ['th', 'st', 'nd', 'rd'][((day % 100) - 20) % 10] || ['th', 'st', 'nd', 'rd'][day % 100] || 'th';
+        const dateStr = date.toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' }).replace(/\d+/, day + suffix);
+        
+        const itemsHtml = reh.items.map(item => {
+            if (item.is_break) {
+                return `<div class="rehearsal-item break">☕ Break - ${item.time}</div>`;
+            }
+            return `
+                <div class="rehearsal-item">
+                    <div><strong>${item.title}</strong></div>
+                    <small class="text-muted">${item.time}</small>
+                </div>
+            `;
+        }).join('');
+        
+        return `
+            <div class="accordion-item">
+                <h2 class="accordion-header">
+                    <button class="accordion-button collapsed" type="button" 
+                            data-bs-toggle="collapse" data-bs-target="#collapse${index}">
+                        <strong>${reh.ensemble_name} - Rehearsal ${reh.rehearsal_num} - ${dateStr}</strong>
+                    </button>
+                </h2>
+                <div id="collapse${index}" class="accordion-collapse collapse" 
+                     data-bs-parent="#rehearsalAccordion">
+                    <div class="accordion-body p-0">
+                        <div class="rehearsal-card">
+                            ${itemsHtml}
+                        </div>
+                        <div class="p-3">
+                            <a href="/s/${reh.schedule_id}?reh=${reh.rehearsal_num}" class="btn btn-sm btn-primary">
+                                <i class="bi bi-eye"></i> View Full Schedule
+                            </a>
+                            <a href="/s/${reh.schedule_id}/pdf" class="btn btn-sm btn-secondary">
+                                <i class="bi bi-file-pdf"></i> Download PDF
+                            </a>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        `;
+    }).join('');
+}
+
+// Render Calendar View
+function renderCalendarView() {
+    const today = new Date();
+    const month1 = new Date(today.getFullYear(), today.getMonth() + currentMonthOffset, 1);
+    
+    document.getElementById('calendarMonths').textContent = 
+        month1.toLocaleDateString('en-GB', { month: 'long', year: 'numeric' });
+    
+    document.getElementById('calendar1').innerHTML = renderMonth(month1);
+}
+
+function renderMonth(date) {
+    const year = date.getFullYear();
+    const month = date.getMonth();
+    const firstDay = new Date(year, month, 1);
+    const lastDay = new Date(year, month + 1, 0);
+    const startDate = new Date(firstDay);
+    startDate.setDate(startDate.getDate() - firstDay.getDay());
+    
+    const monthName = date.toLocaleDateString('en-GB', { month: 'long', year: 'numeric' });
+    
+    let html = `<div class="calendar-month">
+        <div class="calendar-header">${monthName}</div>
+        <div class="calendar-grid">
+            <div class="calendar-day-header">Sun</div>
+            <div class="calendar-day-header">Mon</div>
+            <div class="calendar-day-header">Tue</div>
+            <div class="calendar-day-header">Wed</div>
+            <div class="calendar-day-header">Thu</div>
+            <div class="calendar-day-header">Fri</div>
+            <div class="calendar-day-header">Sat</div>`;
+    
+    const currentDate = new Date(startDate);
+    for (let i = 0; i < 42; i++) {
+        const isOtherMonth = currentDate.getMonth() !== month;
+        const dateStr = currentDate.toISOString().split('T')[0];
+        const dayRehearsals = rehearsalsData.filter(reh => reh.date === dateStr);
+        
+        html += `<div class="calendar-day ${isOtherMonth ? 'other-month' : ''}">
+            <div class="calendar-day-number">${currentDate.getDate()}</div>
+            <div class="calendar-rehearsals-container">`;
+        
+        dayRehearsals.forEach(reh => {
+            const truncatedName = reh.ensemble_name.length > 15 ? reh.ensemble_name.substring(0, 15) + '...' : reh.ensemble_name;
+            html += `<a href="/s/${reh.schedule_id}?reh=${reh.rehearsal_num}" class="calendar-rehearsal">
+                ${truncatedName} - R${reh.rehearsal_num}
+            </a>`;
+        });
+        
+        html += `</div></div>`;
+        currentDate.setDate(currentDate.getDate() + 1);
+    }
+    
+    html += `</div></div>`;
+    return html;
+}
+
+// View toggle handlers
+document.getElementById('listViewBtn').addEventListener('click', () => {
+    document.getElementById('listView').classList.remove('d-none');
+    document.getElementById('calendarView').classList.add('d-none');
+    document.getElementById('listViewBtn').classList.add('active');
+    document.getElementById('calendarViewBtn').classList.remove('active');
+});
+
+document.getElementById('calendarViewBtn').addEventListener('click', () => {
+    document.getElementById('listView').classList.add('d-none');
+    document.getElementById('calendarView').classList.remove('d-none');
+    document.getElementById('listViewBtn').classList.remove('active');
+    document.getElementById('calendarViewBtn').classList.add('active');
+});
+
+// Calendar navigation
+document.getElementById('prevMonth').addEventListener('click', () => {
+    currentMonthOffset -= 1;
+    renderCalendarView();
+});
+
+document.getElementById('nextMonth').addEventListener('click', () => {
+    currentMonthOffset += 1;
+    renderCalendarView();
+});
+
+// Load data on page load
+loadRehearsals();
+</script>
+{% endblock %}
