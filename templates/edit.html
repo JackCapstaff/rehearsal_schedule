@@ -19,6 +19,9 @@
       </div>
 
       <div style="display:flex; gap:8px; flex-wrap:wrap;">
+        <a class="btn secondary" href="{{ url_for('admin_home') }}">
+          <i class="bi bi-arrow-left"></i> Back to Admin
+        </a>
         <a class="btn secondary" href="{{ url_for('my_view') }}">Back to My</a>
 
         {% if status == "draft" %}
@@ -34,6 +37,14 @@
         {% endif %}
 
         <a class="btn secondary" href="{{ url_for('schedule_view', schedule_id=schedule_id) }}">View</a>
+        
+        <form method="post" action="{{ url_for('admin_delete_schedule', schedule_id=schedule_id) }}" 
+              onsubmit="return confirm('Are you sure you want to delete this schedule? This action cannot be undone.');" 
+              style="display:inline;">
+          <button class="btn" type="submit" style="background-color: #dc2626; border-color: #dc2626;">
+            <i class="bi bi-trash"></i> Delete Schedule
+          </button>
+        </form>
       </div>
     </div>
   </div>
@@ -70,14 +81,17 @@
     <button class="btn secondary" onclick="addWorkRow()">Add work</button>
   </div>
   <!-- ===================== -->
-  <!-- Rehearsals table      -->
+  <!-- Events table          -->
   <!-- ===================== -->
   <div class="card">
-    <h3>Rehearsals</h3>
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
+      <h3 style="margin:0;">Events (Rehearsals, Concerts, Sectionals)</h3>
+      <button class="btn secondary" onclick="refreshFromServer()" style="padding:6px 12px;">🔄 Refresh</button>
+    </div>
     <div class="table-wrap">
       <div id="rehearsals-table"></div>
     </div>
-    <button class="btn secondary" onclick="addRehearsalRow()">Add rehearsal</button>
+    <button class="btn secondary" onclick="addEventRow()">Add event</button>
   </div>
 
   <!-- ===================== -->
@@ -99,7 +113,7 @@
       <span class="toggle-icon">▼</span>
       <span>Allocation</span>
     </div>
-    <div class="accordion-content hidden" style="padding:20px;">
+    <div class="accordion-content" style="display: none; padding:20px;">
       <div id="allocation-table"></div>
     </div>
   </div>
@@ -112,7 +126,7 @@
       <span class="toggle-icon">▼</span>
       <span>Schedule</span>
     </div>
-    <div class="accordion-content hidden" style="padding:20px;">
+    <div class="accordion-content" style="display: none; padding:20px;">
       <div id="schedule-table"></div>
     </div>
   </div>
@@ -154,9 +168,98 @@
     allocation: {{ allocation | tojson }},
     schedule: {{ schedule | tojson }},
     timed: {{ timed | tojson }},
+    concerts: {{ concerts | tojson }},  // Add concerts for timeline editor
   };
 
   // Let editor.js initialise tables
   initEditor(window.INITIAL_DATA);
+  
+  // Populate sections editor
+  function renderSectionsEditor() {
+    const sectionsDiv = document.getElementById('sections-editor');
+    if (!sectionsDiv) return;
+    
+    const rehearsals = window.INITIAL_DATA.rehearsals || [];
+    
+    // Sort by rehearsal number
+    const sorted = rehearsals.sort((a, b) => {
+      const numA = parseInt(a.Rehearsal);
+      const numB = parseInt(b.Rehearsal);
+      return numA - numB;
+    });
+    
+    sectionsDiv.innerHTML = sorted.map(reh => `
+      <div style="display: flex; gap: 12px; align-items: center; margin-bottom: 12px; padding: 10px; background: #f9fafb; border-radius: 4px;">
+        <div style="flex: 1;">
+          <strong>Rehearsal ${reh.Rehearsal}</strong><br>
+          <small style="color: #666;">${reh.Date || 'Date not set'}</small>
+        </div>
+        <div style="display: flex; gap: 8px; align-items: center;">
+          <div>
+            <label style="display: block; font-size: 0.85rem; margin-bottom: 4px; color: #666;">Event Type</label>
+            <select class="event-type-input" data-rehearsal="${reh.Rehearsal}" 
+                    style="padding: 8px; border: 1px solid #d1d5db; border-radius: 4px;">
+              <option value="Rehearsal" ${reh['Event Type'] === 'Rehearsal' ? 'selected' : ''}>Rehearsal</option>
+              <option value="Sectional" ${reh['Event Type'] === 'Sectional' ? 'selected' : ''}>Sectional</option>
+              <option value="Concert" ${reh['Event Type'] === 'Concert' ? 'selected' : ''}>Concert</option>
+            </select>
+          </div>
+          <div>
+            <label style="display: block; font-size: 0.85rem; margin-bottom: 4px; color: #666;">Section</label>
+            <input type="text" class="section-input" data-rehearsal="${reh.Rehearsal}" 
+                   value="${reh.Section || 'Full Ensemble'}" placeholder="Full Ensemble"
+                   style="padding: 8px; border: 1px solid #d1d5db; border-radius: 4px; width: 180px;">
+          </div>
+          <button onclick="saveEventTypeAndSection(${reh.Rehearsal})" class="btn btn-sm" style="padding: 6px 12px; align-self: flex-end;">Save</button>
+        </div>
+      </div>
+    `).join('');
+  }
+  
+  // Save event type and section change
+  async function saveEventTypeAndSection(rehearsalNum) {
+    const eventTypeSelect = document.querySelector(`.event-type-input[data-rehearsal="${rehearsalNum}"]`);
+    const sectionInput = document.querySelector(`.section-input[data-rehearsal="${rehearsalNum}"]`);
+    if (!eventTypeSelect || !sectionInput) return;
+    
+    const eventType = eventTypeSelect.value.trim();
+    const section = sectionInput.value.trim() || 'Full Ensemble';
+    
+    try {
+      const response = await fetch(`/api/s/{{ schedule_id }}/rehearsal-event-type/${rehearsalNum}`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ 'Event Type': eventType, 'Section': section })
+      });
+      
+      if (response.ok) {
+        // Update STATE
+        const rehearsal = STATE.rehearsals.find(r => parseInt(r.Rehearsal) === rehearsalNum);
+        if (rehearsal) {
+          rehearsal['Event Type'] = eventType;
+          rehearsal['Section'] = section;
+        }
+        // Also update timed data
+        STATE.timed.forEach(row => {
+          if (parseInt(row.Rehearsal) === rehearsalNum) {
+            row.Section = section;
+          }
+        });
+        alert('Event type and section updated!');
+      } else {
+        alert('Error updating event type and section');
+      }
+    } catch (error) {
+      console.error('Error:', error);
+      alert('Failed to update event type and section');
+    }
+  }
+  
+  // Render sections when page loads
+  setTimeout(() => {
+    renderSectionsEditor();
+  }, 500);
 </script>
 {% endblock %}

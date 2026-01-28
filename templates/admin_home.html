@@ -32,6 +32,8 @@
             <span class="small">({{ e.id }})</span>
           </div>
 
+          <a class="btn secondary" href="{{ url_for('admin_view_concerts', ensemble_id=e.id) }}">Concerts</a>
+
           <form method="post" action="{{ url_for('admin_rename_ensemble', ensemble_id=e.id) }}" style="display:flex; gap:8px;">
             <input name="name" value="{{ e.name }}" required style="padding:8px;">
             <button class="btn secondary" type="submit">Rename</button>
@@ -174,4 +176,43 @@
       {% endfor %}
     </div>
   </div>
+
+  <div class="card">
+    <strong>System Maintenance</strong>
+    <div style="margin-top: 16px;">
+      <button onclick="cleanupDuplicateConcerts()" class="btn secondary" style="background: #f59e0b; color: white;">
+        🧹 Clean Up Duplicate Concerts
+      </button>
+      <div class="small" style="margin-top: 8px; color: #666;">
+        Removes old auto-generated duplicate concerts (auto_concert_*) from before the deduplication fix.
+      </div>
+    </div>
+  </div>
+
+  <script>
+    async function cleanupDuplicateConcerts() {
+      if (!confirm('This will remove all duplicate auto-generated concerts. Continue?')) {
+        return;
+      }
+      
+      try {
+        const response = await fetch('/api/admin/cleanup-duplicate-concerts', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          credentials: 'same-origin'
+        });
+        
+        if (response.ok) {
+          const result = await response.json();
+          alert(`Success! ${result.message}`);
+          location.reload();
+        } else {
+          alert('Error cleaning up concerts');
+        }
+      } catch (error) {
+        console.error('Error:', error);
+        alert('Failed to cleanup concerts: ' + error.message);
+      }
+    }
+  </script>
 {% endblock %}

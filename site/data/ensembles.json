@@ -1,14 +1,31 @@
 [
   {
     "id": "dco",
-    "name": "Derby Concert Orchestra"
+    "name": "Derby Concert Orchestra",
+    "concerts": []
   },
   {
     "id": "derwent-brass",
-    "name": "Derwent Brass"
+    "name": "Derwent Brass",
+    "concerts": []
   },
   {
     "id": "rotherham-symphony-orchestra",
-    "name": "Rotherham Symphony Orchestra"
+    "name": "Rotherham Symphony Orchestra",
+    "concerts": [
+      {
+        "id": "concert_57d39533fa48",
+        "title": "Rotherham Symphony Orchestra - Fate and Destiny",
+        "date": "2026-03-14",
+        "time": "19:30",
+        "venue": "Rotherham Minster",
+        "uniform": "TBC",
+        "programme": "Handel - Fireworks\nForce of Destiny \nCarmer Suite 1\n\nBeethoven Symphony 5",
+        "other_info": "Afternoon Rehearsal",
+        "status": "scheduled",
+        "schedule_id": "sched_566a4a128f",
+        "is_auto_generated": true
+      }
+    ]
   }
 ]

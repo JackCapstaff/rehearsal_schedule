@@ -10,7 +10,7 @@
     body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; margin: 0; background: #f6f7fb; color: #111; }
     header { background: #111827; color: white; padding: 14px 18px; }
     header a { color: #dbeafe; text-decoration: none; }
-    .wrap { max-width: 1200px; margin: 0 auto; padding: 18px; }
+    .wrap { max-width: 1800px; margin: 0 auto; padding: 18px; }
     .card { background: white; border-radius: 12px; padding: 14px; box-shadow: 0 2px 10px rgba(0,0,0,.06); margin-bottom: 14px; }
     table { width: 100%; border-collapse: collapse; }
     th, td { border-bottom: 1px solid #e5e7eb; padding: 8px; vertical-align: top; }
@@ -34,8 +34,27 @@
   <header>
     <div class="wrap" style="display:flex; align-items:center; justify-content:space-between;">
       <div><strong>Rehearsal Schedule</strong> <span class="small" style="margin-left:8px;">{{ subtitle or "" }}</span></div>
-      <div>
-        <a href="{{ url_for('my_view') }}">Public View</a>
+      <div style="display:flex; align-items:center; gap:12px;">
+        {% if user %}
+          <div style="display:flex; align-items:center; gap:8px;">
+            <div style="text-align:right;">
+              <div style="font-size:13px;">{{ user.email }}</div>
+              {% if user.is_admin %}
+                <div class="small" style="opacity:0.8;">Admin access enabled</div>
+              {% endif %}
+            </div>
+            {% if user.is_admin %}
+              <a href="{{ url_for('admin_home') }}" class="btn btn-sm" style="padding:4px 10px; background:#374151;">
+                <i class="bi bi-gear"></i> Admin
+              </a>
+            {% endif %}
+            <a href="{{ url_for('logout_view') }}" class="btn btn-sm" style="padding:4px 10px; background:#374151;">
+              <i class="bi bi-box-arrow-right"></i> Logout
+            </a>
+          </div>
+        {% else %}
+          <a href="{{ url_for('my_view') }}">Public View</a>
+        {% endif %}
         {% if edit_link %}
           <span class="small" style="margin:0 8px;">|</span>
           <a href="{{ edit_link }}">Edit</a>

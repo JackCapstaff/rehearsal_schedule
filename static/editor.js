@@ -64,11 +64,11 @@ function toggleAccordion(headerEl) {
   if (isCollapsed) {
     // Open it
     headerEl.classList.remove("collapsed");
-    content.classList.remove("hidden");
+    content.style.display = "block";
   } else {
     // Close it
     headerEl.classList.add("collapsed");
-    content.classList.add("hidden");
+    content.style.display = "none";
   }
 }
 
@@ -114,7 +114,9 @@ function renderTable(containerId, rows, cols, onChange, opts = {}) {
   frozenCols.forEach(c => {
     const th = document.createElement("th");
     th.textContent = c;
-    th.style.cssText = "min-width:120px; width:120px; max-width:120px; box-sizing:border-box; padding:10px 8px; border:none; border-right:1px solid #e5e7eb; background:#f3f4f6; font-weight:600; text-align:left; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; height:44px; line-height:44px;";
+    const isTitle = isTitleColumn(c);
+    const widthStyle = isTitle ? "min-width:400px; width:400px; max-width:400px;" : "min-width:120px; width:120px; max-width:120px;";
+    th.style.cssText = `${widthStyle} box-sizing:border-box; padding:10px 8px; border:none; border-right:1px solid #e5e7eb; background:#f3f4f6; font-weight:600; text-align:left; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; height:44px; line-height:44px;`;
     frozenTrh.appendChild(th);
   });
   frozenThead.appendChild(frozenTrh);
@@ -189,8 +191,10 @@ function renderTable(containerId, rows, cols, onChange, opts = {}) {
         if (onChange) onChange();
       });
 
+      const isTitle = isTitleColumn(c);
+      const widthStyle = isTitle ? "min-width:400px; width:400px; max-width:400px;" : "min-width:120px; width:120px; max-width:120px;";
       td.appendChild(inp);
-      td.style.cssText = "min-width:120px; width:120px; max-width:120px; box-sizing:border-box; padding:0; border:none; border-right:1px solid #e5e7eb; border-bottom:1px solid #e5e7eb; height:40px; line-height:40px; overflow:hidden;";
+      td.style.cssText = `${widthStyle} box-sizing:border-box; padding:0; border:none; border-right:1px solid #e5e7eb; border-bottom:1px solid #e5e7eb; height:40px; line-height:40px; overflow:hidden;`;
       tr.appendChild(td);
     });
     frozenTbody.appendChild(tr);
@@ -215,7 +219,7 @@ function renderTable(containerId, rows, cols, onChange, opts = {}) {
     const th = document.createElement("th");
     th.textContent = c;
     const isTitle = isTitleColumn(c);
-    const widthStyle = isTitle ? "width:100%; min-width:200px;" : "width:90px; min-width:90px; max-width:90px;";
+    const widthStyle = isTitle ? "width:100%; min-width:400px;" : "width:90px; min-width:90px; max-width:90px;";
     th.style.cssText = `${widthStyle} box-sizing:border-box; padding:10px 8px; border:none; border-right:1px solid #e5e7eb; background:#f3f4f6; font-weight:600; text-align:${isTitle ? "left" : "center"}; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; height:44px; line-height:44px;`;
     scrollTrh.appendChild(th);
   });
@@ -294,7 +298,7 @@ function renderTable(containerId, rows, cols, onChange, opts = {}) {
 
       const isLastCol = colIdx === scrollCols.length - 1;
       const isTitle = isTitleColumn(c);
-      const widthStyle = isTitle ? "width:100%; min-width:200px;" : "width:90px; min-width:90px; max-width:90px;";
+      const widthStyle = isTitle ? "width:100%; min-width:400px;" : "width:90px; min-width:90px; max-width:90px;";
       td.appendChild(inp);
       td.style.cssText = `${widthStyle} box-sizing:border-box; padding:0; border:none; border-right:${isLastCol ? "none" : "1px solid #e5e7eb"}; border-bottom:1px solid #e5e7eb; height:40px; line-height:40px; overflow:hidden;`;
       tr.appendChild(td);
@@ -1097,15 +1101,66 @@ function renderTimedAccordion(containerId, rows) {
   container.appendChild(accordion);
 }
 
+/**
+ * Sort rehearsals chronologically and renumber them
+ */
+function sortAndRenumberRehearsals() {
+  if (!STATE.rehearsals || STATE.rehearsals.length === 0) return;
+  
+  // Sort by date, then by start time
+  STATE.rehearsals.sort((a, b) => {
+    const dateA = a.Date || '';
+    const dateB = b.Date || '';
+    
+    if (dateA !== dateB) {
+      return dateA.localeCompare(dateB);
+    }
+    
+    // If same date, sort by start time
+    const timeA = a['Start Time'] || '';
+    const timeB = b['Start Time'] || '';
+    return timeA.localeCompare(timeB);
+  });
+  
+  // Renumber sequentially
+  STATE.rehearsals.forEach((reh, index) => {
+    reh.Rehearsal = String(index + 1);
+  });
+  
+  console.log("[SORT] Rehearsals sorted and renumbered chronologically:", 
+    STATE.rehearsals.map(r => ({ num: r.Rehearsal, date: r.Date, time: r['Start Time'] })));
+}
+
 async function refreshFromServer() {
   const data = await apiGet("/state");
   STATE.works_cols = data.works_cols || [];
   STATE.rehearsals_cols = data.rehearsals_cols || [];
   STATE.works = data.works || [];
   STATE.rehearsals = data.rehearsals || [];
+  STATE.ensemble_id = data.ensemble_id || STATE.ensemble_id;
+  
+  // Sort and renumber rehearsals chronologically
+  sortAndRenumberRehearsals();
+  
   STATE.allocation = data.allocation || [];
   STATE.schedule = data.schedule || [];
   STATE.timed = (data.timed || []).map((row, idx) => ({ ...row, _index: idx }));
+  STATE.concerts = data.concerts || [];  // Store concerts for timeline editor
+  
+  console.log("[REFRESH] Concerts loaded from API:", STATE.concerts);
+  console.log("[REFRESH] Concerts count:", STATE.concerts.length);
+  
+  // Debug: Check if Event Type is being passed through
+  if (STATE.rehearsals.length > 0) {
+    const firstReh = STATE.rehearsals[0];
+    const hasEventType = "Event Type" in firstReh;
+    console.log("[TIMELINE] Rehearsals loaded:", {
+      count: STATE.rehearsals.length,
+      hasEventType: hasEventType,
+      first_keys: Object.keys(firstReh),
+      eventTypeValues: STATE.rehearsals.slice(0, 3).map(r => ({ Rehearsal: r.Rehearsal, "Event Type": r["Event Type"] }))
+    });
+  }
   
   console.log("STATE after refresh:", {
     works: STATE.works.length,
@@ -1168,10 +1223,11 @@ function addWorkRow() {
 }
 
 function addRehearsalRow() {
-  const row = {};
-  STATE.rehearsals_cols.forEach(c => row[c] = "");
-  STATE.rehearsals.push(row);
-  renderTable("rehearsals-table", STATE.rehearsals, STATE.rehearsals_cols, saveInputs);
+  openAddEventModal();
+}
+
+function addEventRow() {
+  openAddEventModal();
 }
 
 async function runAllocation() {
@@ -1205,12 +1261,47 @@ async function runAllocation() {
   }
 }
 
+/**
+ * Sync dates from rehearsals table to timed data
+ * When a rehearsal date is edited in the Rehearsals table, update all timed rows for that rehearsal
+ */
+function syncRehearsalDatesToTimed() {
+  if (!STATE.timed || !STATE.rehearsals) return;
+  
+  // Build a map of rehearsal number -> date from the rehearsals table
+  const rehearsalDateMap = {};
+  
+  // Find the Date column in rehearsals
+  const dateColIndex = STATE.rehearsals_cols?.indexOf('Date') ?? -1;
+  if (dateColIndex === -1) return;
+  
+  STATE.rehearsals.forEach((reh, idx) => {
+    const rehNum = parseInt(reh['Rehearsal Number'] || reh['Rehearsal'] || idx + 1);
+    const date = reh['Date'];
+    if (date) {
+      rehearsalDateMap[rehNum] = date;
+    }
+  });
+  
+  // Update timed data with these dates
+  STATE.timed.forEach(timedRow => {
+    const rehNum = parseInt(timedRow['Rehearsal']);
+    if (rehearsalDateMap[rehNum]) {
+      timedRow['Date'] = rehearsalDateMap[rehNum];
+    }
+  });
+  
+  console.log('✓ Synced rehearsal dates to timed data:', rehearsalDateMap);
+}
+
 async function generateSchedule() {
   const msg = el("importMsg");
   msg.textContent = "Generating schedule...";
   try {
     await apiPost("/generate_schedule", {});
     await refreshFromServer();
+    // Sync rehearsal dates to timed data after generating
+    syncRehearsalDatesToTimed();
     msg.textContent = "Schedule generated.";
   } catch (err) {
     let errorMsg = "Schedule generation failed";
@@ -1250,6 +1341,9 @@ async function uploadXlsx() {
 
 function initEditor(initial) {
   STATE = { ...STATE, ...initial };
+  // Set schedule_id from the DOM
+  STATE.schedule_id = scheduleId();
+  
   // Ensure timed data has _index
   if (STATE.timed && Array.isArray(STATE.timed)) {
     STATE.timed = STATE.timed.map((row, idx) => ({ ...row, _index: idx }));
@@ -1483,6 +1577,7 @@ function timedToTimelineItems(timedArray, rehearsalNum = null) {
         date: work.Date,
         breakStart: work['Break Start (HH:MM)'],
         breakEnd: work['Break End (HH:MM)'],
+        concert_id: work.concert_id,  // Preserve concert_id for concert events
       };
     });
     
@@ -1507,6 +1602,11 @@ function timelineItemsToTimed(items) {
       'Break Start (HH:MM)': item.breakStart || '',
       'Break End (HH:MM)': item.breakEnd || '',
     };
+    
+    // Preserve concert_id if present (for concert events)
+    if (item.concert_id) {
+      entry.concert_id = item.concert_id;
+    }
     
     // Store duration if we have it
     if (item.duration_mins) {
@@ -1900,6 +2000,9 @@ async function saveTimelineToBackend() {
     const result = await res.json();
     console.log("Timeline auto-saved.", result);
     
+    // Sync rehearsal dates to timed before re-rendering
+    syncRehearsalDatesToTimed();
+    
     // 5. Re-render the Original Allocation Table
     if (STATE.allocation_original && STATE.allocation_original.length > 0) {
       const allocCols = Object.keys(STATE.allocation_original[0]);
@@ -2013,13 +2116,59 @@ function renderRehearsalColumn(rehearsalNum, works) {
   column.setAttribute("data-rehearsal", rehearsalNum);
   column.style.cssText = "flex: 0 0 350px; border:1px solid #d1d5db; border-radius:4px; overflow:hidden; background:white; display:flex; flex-direction:column;";
 
-  // Header with add button
+  // Header with add button - determine event type and colors
+  let eventType = "Rehearsal";
+  let headerBgColor = "#f3f4f6";
+  let headerBorderColor = "#d1d5db";
+  let headerTextColor = "#000";
+  
+  if (STATE.rehearsals && Array.isArray(STATE.rehearsals)) {
+    const rehearsalData = STATE.rehearsals.find(r => parseInt(r.Rehearsal) === rehearsalNum);
+    if (rehearsalData) {
+      eventType = rehearsalData['Event Type'] || 'Rehearsal';
+    }
+  }
+  
+  switch (eventType) {
+    case 'Concert':
+      headerBgColor = "#dbeafe";
+      headerBorderColor = "#0284c7";
+      headerTextColor = "#0c4a6e";
+      break;
+    case 'Sectional':
+      headerBgColor = "#fef3c7";
+      headerBorderColor = "#f59e0b";
+      headerTextColor = "#78350f";
+      break;
+    default:
+      headerBgColor = "#f3f4f6";
+      headerBorderColor = "#d1d5db";
+      headerTextColor = "#000";
+  }
+  
   const header = document.createElement("div");
-  header.style.cssText = "padding:12px; background:#f3f4f6; border-bottom:1px solid #d1d5db; font-weight:600; text-align:center; display:flex; justify-content:space-between; align-items:center; gap:8px;";
+  header.style.cssText = `padding:12px; background:${headerBgColor}; border-bottom:2px solid ${headerBorderColor}; border-left:4px solid ${headerBorderColor}; font-weight:600; text-align:center; display:flex; justify-content:space-between; align-items:center; gap:8px;`;
   
   const title = document.createElement("span");
-  title.textContent = `Rehearsal ${rehearsalNum}`;
-  title.style.cssText = "flex: 1;";
+  
+  // Determine title text based on event type
+  let titleText = `Rehearsal ${rehearsalNum}`;
+  if (eventType === 'Concert') {
+    titleText = 'Concert';
+  } else if (eventType === 'Sectional') {
+    // Try to get ensemble name from schedule metadata or rehearsal data
+    let ensembleName = '';
+    if (STATE.rehearsals && Array.isArray(STATE.rehearsals)) {
+      const rehearsalData = STATE.rehearsals.find(r => parseInt(r.Rehearsal) === rehearsalNum);
+      if (rehearsalData && rehearsalData['Section']) {
+        ensembleName = rehearsalData['Section'];
+      }
+    }
+    titleText = ensembleName ? `Sectional` : 'Sectional';
+  }
+  
+  title.textContent = titleText;
+  title.style.cssText = `flex: 1; color: ${headerTextColor};`;
   
   const viewBtn = document.createElement("button");
   viewBtn.textContent = "View";
@@ -2036,9 +2185,15 @@ function renderRehearsalColumn(rehearsalNum, works) {
   addBtn.style.cssText = "padding:4px 12px; background:#3b82f6; color:white; border:none; border-radius:4px; font-size:12px; cursor:pointer; font-weight:500; white-space:nowrap;";
   addBtn.addEventListener("click", () => openAddWorkModal(rehearsalNum));
   
+  const editBtn = document.createElement("button");
+  editBtn.textContent = "✎ Edit";
+  editBtn.style.cssText = "padding:4px 12px; background:#f59e0b; color:white; border:none; border-radius:4px; font-size:12px; cursor:pointer; font-weight:500; white-space:nowrap;";
+  editBtn.addEventListener("click", () => openRehearsalEditModal(rehearsalNum));
+  
   header.appendChild(title);
   header.appendChild(viewBtn);
   header.appendChild(addBtn);
+  header.appendChild(editBtn);
   column.appendChild(header);
 
   // Timeline container (scrollable)
@@ -2116,8 +2271,35 @@ function renderTimelineItem(item, rehearsalNum, bounds) {
   itemEl.dataset.rehearsalNum = rehearsalNum;
   itemEl.dataset.originalIndex = item.originalIndex;
 
-  const bgColor = item.is_break ? '#f59e0b' : '#3b82f6';
-  const borderColor = item.is_break ? '#d97706' : '#2563eb';
+  // Determine colors based on event type and whether it's a break
+  let bgColor = '#3b82f6';  // Default rehearsal blue
+  let borderColor = '#2563eb';
+  
+  if (item.is_break) {
+    bgColor = '#f59e0b';  // Orange for breaks
+    borderColor = '#d97706';
+  } else {
+    // Get event type for this rehearsal
+    if (STATE.rehearsals && Array.isArray(STATE.rehearsals)) {
+      const rehearsalData = STATE.rehearsals.find(r => parseInt(r.Rehearsal) === rehearsalNum);
+      if (rehearsalData) {
+        const eventType = rehearsalData['Event Type'] || 'Rehearsal';
+        switch (eventType) {
+          case 'Concert':
+            bgColor = '#06b6d4';  // Cyan/turquoise
+            borderColor = '#0891b2';
+            break;
+          case 'Sectional':
+            bgColor = '#ec4899';  // Pink/magenta
+            borderColor = '#be185d';
+            break;
+          default: // Rehearsal
+            bgColor = '#3b82f6';  // Blue
+            borderColor = '#2563eb';
+        }
+      }
+    }
+  }
 
   itemEl.style.cssText = `
     position:absolute;
@@ -2170,6 +2352,20 @@ function renderTimelineItem(item, rehearsalNum, bounds) {
     position:relative;
   `;
   
+  // Determine display title based on event type (for non-breaks)
+  let displayTitle = item.title;
+  if (!item.is_break && STATE.rehearsals && Array.isArray(STATE.rehearsals)) {
+    const rehearsalData = STATE.rehearsals.find(r => parseInt(r.Rehearsal) === rehearsalNum);
+    if (rehearsalData) {
+      const eventType = rehearsalData['Event Type'] || 'Rehearsal';
+      if (eventType === 'Concert') {
+        displayTitle = 'Concert';
+      } else if (eventType === 'Sectional') {
+        displayTitle = 'Sectional Rehearsal';
+      }
+    }
+  }
+  
   // Determine what to show based on block size
   const isSmallBlock = item.duration_mins <= 10;
   const isTinyBlock = item.duration_mins <= 5;
@@ -2177,18 +2373,18 @@ function renderTimelineItem(item, rehearsalNum, bounds) {
   if (isTinyBlock) {
     // Tiny blocks: Just title, truncated
     content.innerHTML = `
-      <div style="font-weight:600; font-size:11px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${escapeHtml(item.title)}</div>
+      <div style="font-weight:600; font-size:11px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${escapeHtml(displayTitle)}</div>
     `;
   } else if (isSmallBlock) {
     // Small blocks: Title + start time only
     content.innerHTML = `
-      <div style="font-weight:600; font-size:11px; margin-bottom:2px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${escapeHtml(item.title)}</div>
+      <div style="font-weight:600; font-size:11px; margin-bottom:2px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${escapeHtml(displayTitle)}</div>
       <div style="font-size:10px; opacity:0.9;">${item.start_time.substring(0,5)}</div>
     `;
   } else {
     // Normal blocks: Full info
     content.innerHTML = `
-      <div style="font-weight:600; font-size:12px; margin-bottom:4px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${escapeHtml(item.title)}</div>
+      <div style="font-weight:600; font-size:12px; margin-bottom:4px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${escapeHtml(displayTitle)}</div>
       <div style="font-size:11px; opacity:0.9;">${item.start_time.substring(0,5)}–${endTime.substring(0,5)}</div>
       <div style="font-size:10px; opacity:0.8;">${item.duration_mins} min</div>
     `;
@@ -2216,7 +2412,7 @@ function renderTimelineItem(item, rehearsalNum, bounds) {
     box-shadow:0 4px 12px rgba(0,0,0,0.3);
   `;
   tooltip.innerHTML = `
-    <div style="font-weight:600; margin-bottom:6px;">${escapeHtml(item.title)}</div>
+    <div style="font-weight:600; margin-bottom:6px;">${escapeHtml(displayTitle)}</div>
     <div style="font-size:11px; opacity:0.9; margin-bottom:2px;">Start: ${item.start_time.substring(0,5)}</div>
     <div style="font-size:11px; opacity:0.9; margin-bottom:2px;">End: ${endTime.substring(0,5)}</div>
     <div style="font-size:11px; opacity:0.9;">Duration: ${item.duration_mins} min</div>
@@ -2528,11 +2724,31 @@ function attachItemEventHandlers(itemEl, item, rehearsalNum, content, resizeTop,
     TIMELINE_STATE.previewTimeline = null;
   };
 
-  // Double-click to open details modal
+  // Double-click to open the same editor as the column header (concerts go to rehearsal edit)
   content.addEventListener("dblclick", (e) => {
     e.preventDefault();
     e.stopPropagation();
-    openWorkDetailsModal(item, rehearsalNum);
+    
+    // Check if this is a concert or sectional event
+    let eventType = 'Rehearsal';
+    
+    if (STATE.rehearsals && Array.isArray(STATE.rehearsals)) {
+      const rehearsalData = STATE.rehearsals.find(r => parseInt(r.Rehearsal) === rehearsalNum);
+      if (rehearsalData) {
+        eventType = rehearsalData['Event Type'] || 'Rehearsal';
+      }
+    }
+    
+    if (eventType === 'Concert') {
+      // Match header edit button: open rehearsal edit modal for concerts
+      openRehearsalEditModal(rehearsalNum);
+    } else if (eventType === 'Sectional') {
+      // Open event edit modal for sectionals
+      openRehearsalEditModal(rehearsalNum);
+    } else {
+      // Open work details modal for regular rehearsal works
+      openWorkDetailsModal(item, rehearsalNum);
+    }
   });
 
   content.addEventListener("mousedown", onMoveStart);
@@ -3057,10 +3273,693 @@ function openAddWorkModal(rehearsalNum) {
     }
   });
   
+  // Add Enter key handler
+  modal.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      document.getElementById('addWorkBtn').click();
+    }
+  });
+  
   // Close on overlay click
   overlay.addEventListener('click', (e) => {
     if (e.target === overlay) overlay.remove();
   });
+}
+
+/**
+ * Open modal to edit rehearsal details (date, time, section)
+ */
+function openRehearsalEditModal(rehearsalNum) {
+  // Find rehearsal in STATE.rehearsals
+  let rehearsalData = null;
+  if (STATE.rehearsals && Array.isArray(STATE.rehearsals)) {
+    rehearsalData = STATE.rehearsals.find(r => parseInt(r.Rehearsal) === rehearsalNum);
+  }
+  
+  const date = rehearsalData && rehearsalData['Date'] ? rehearsalData['Date'].substring(0, 10) : '';
+  const startTime = rehearsalData && rehearsalData['Start Time'] ? rehearsalData['Start Time'] : '';
+  const endTime = rehearsalData && rehearsalData['End Time'] ? rehearsalData['End Time'] : '';
+  const includeInAllocation = rehearsalData && rehearsalData['Include in allocation'] ? rehearsalData['Include in allocation'] : 'Y';
+  const eventType = rehearsalData && rehearsalData['Event Type'] ? rehearsalData['Event Type'] : 'Rehearsal';
+  const section = rehearsalData && rehearsalData['Section'] ? rehearsalData['Section'] : 'Full Ensemble';
+  const isConcert = eventType === 'Concert';
+  
+  // For concerts, get concert data from STATE.concerts using concert_id from timed data
+  let concertData = null;
+  if (isConcert && STATE.concerts && STATE.timed) {
+    console.log('[CONCERT EDIT MODAL] Looking for concert data for rehearsal', rehearsalNum);
+    console.log('[CONCERT EDIT MODAL] STATE.concerts:', STATE.concerts);
+    console.log('[CONCERT EDIT MODAL] STATE.timed length:', STATE.timed.length);
+    
+    const timedRow = STATE.timed.find(t => parseInt(t.Rehearsal) === rehearsalNum);
+    console.log('[CONCERT EDIT MODAL] Found timed row:', timedRow);
+    
+    if (timedRow && timedRow.concert_id) {
+      console.log('[CONCERT EDIT MODAL] Looking for concert with id:', timedRow.concert_id);
+      concertData = STATE.concerts.find(c => c.id === timedRow.concert_id);
+      console.log('[CONCERT EDIT MODAL] Found concert data:', concertData);
+    } else {
+      console.log('[CONCERT EDIT MODAL] No concert_id in timed row');
+    }
+  } else {
+    console.log('[CONCERT EDIT MODAL] Skipping concert lookup:', {
+      isConcert,
+      hasConcerts: !!STATE.concerts,
+      hasTimed: !!STATE.timed
+    });
+  }
+  
+  // Extract concert details for pre-populating fields
+  const concertTitle = concertData?.title || '';
+  const concertVenue = concertData?.venue || '';
+  const concertUniform = concertData?.uniform || '';
+  const concertProgramme = concertData?.programme || '';
+  const concertOtherInfo = concertData?.other_info || '';
+  const concertTime = concertData?.time || startTime;
+  // Use concert date if available, otherwise use rehearsal date
+  const concertDate = concertData?.date ? concertData.date.substring(0, 10) : date;
+  
+  // Create modal overlay
+  const overlay = document.createElement("div");
+  overlay.id = "rehearsalEditModalOverlay";
+  overlay.style.cssText = `
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: rgba(0,0,0,0.5);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 10000;
+  `;
+  
+  // Create modal content
+  const modal = document.createElement("div");
+  modal.style.cssText = `
+    background: white;
+    border-radius: 8px;
+    padding: 24px;
+    max-width: 500px;
+    width: 90%;
+    max-height: 80vh;
+    overflow-y: auto;
+    box-shadow: 0 20px 25px -5px rgba(0,0,0,0.1), 0 10px 10px -5px rgba(0,0,0,0.04);
+  `;
+  
+  // Build modal content - different for concerts vs rehearsals
+  if (isConcert) {
+    modal.innerHTML = `
+      <div style="display: flex; justify-content: space-between; align-items: start; margin-bottom: 20px;">
+        <h3 style="margin: 0; font-size: 18px; font-weight: 600; color: #111827;">Edit Concert</h3>
+        <button onclick="document.getElementById('rehearsalEditModalOverlay')?.remove()" style="background: none; border: none; font-size: 24px; color: #6b7280; cursor: pointer; padding: 0; line-height: 1;">&times;</button>
+      </div>
+      
+      <div style="margin-bottom: 16px;">
+        <label style="display: block; font-size: 14px; font-weight: 500; color: #374151; margin-bottom: 8px;">Concert Title</label>
+        <input type="text" id="editConcertTitle" value="${concertTitle}" placeholder="e.g., Spring Concert 2026" style="width: 100%; padding: 10px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 14px; box-sizing: border-box;">
+        <small style="color: #6b7280; display: block; margin-top: 4px;">Title of the concert</small>
+      </div>
+      
+      <div style="margin-bottom: 16px;">
+        <label style="display: block; font-size: 14px; font-weight: 500; color: #374151; margin-bottom: 8px;">Date</label>
+        <input type="date" id="editConcertDate" value="${concertDate}" style="width: 100%; padding: 10px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 14px; box-sizing: border-box;">
+        <small style="color: #6b7280; display: block; margin-top: 4px;">Date of the concert</small>
+      </div>
+      
+      <div style="margin-bottom: 16px;">
+        <label style="display: block; font-size: 14px; font-weight: 500; color: #374151; margin-bottom: 8px;">Time (HH:MM)</label>
+        <input type="text" id="editConcertTime" value="${concertTime}" placeholder="e.g., 19:30" style="width: 100%; padding: 10px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 14px; box-sizing: border-box;">
+        <small style="color: #6b7280; display: block; margin-top: 4px;">Concert start time</small>
+      </div>
+      
+      <div style="margin-bottom: 16px;">
+        <label style="display: block; font-size: 14px; font-weight: 500; color: #374151; margin-bottom: 8px;">Venue</label>
+        <input type="text" id="editConcertVenue" value="${concertVenue}" placeholder="e.g., Town Hall" style="width: 100%; padding: 10px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 14px; box-sizing: border-box;">
+        <small style="color: #6b7280; display: block; margin-top: 4px;">Concert venue</small>
+      </div>
+      
+      <div style="margin-bottom: 16px;">
+        <label style="display: block; font-size: 14px; font-weight: 500; color: #374151; margin-bottom: 8px;">Uniform</label>
+        <input type="text" id="editConcertUniform" value="${concertUniform}" placeholder="e.g., Black tie, Concert dress" style="width: 100%; padding: 10px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 14px; box-sizing: border-box;">
+        <small style="color: #6b7280; display: block; margin-top: 4px;">Dress code / uniform requirements</small>
+      </div>
+      
+      <div style="margin-bottom: 16px;">
+        <label style="display: block; font-size: 14px; font-weight: 500; color: #374151; margin-bottom: 8px;">Programme</label>
+        <textarea id="editConcertProgramme" placeholder="Enter the concert programme..." style="width: 100%; padding: 10px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 14px; box-sizing: border-box; min-height: 100px; font-family: monospace;">${concertProgramme}</textarea>
+        <small style="color: #6b7280; display: block; margin-top: 4px;">Concert programme / pieces to be performed</small>
+      </div>
+      
+      <div style="margin-bottom: 20px;">
+        <label style="display: block; font-size: 14px; font-weight: 500; color: #374151; margin-bottom: 8px;">Other Info</label>
+        <textarea id="editConcertOtherInfo" placeholder="Additional information..." style="width: 100%; padding: 10px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 14px; box-sizing: border-box; min-height: 80px;">${concertOtherInfo}</textarea>
+        <small style="color: #6b7280; display: block; margin-top: 4px;">Any other relevant information</small>
+      </div>
+      
+      <div style="display: flex; gap: 8px; justify-content: flex-end;">
+        <button onclick="document.getElementById('rehearsalEditModalOverlay')?.remove()" class="btn secondary" style="padding: 8px 16px;">Cancel</button>
+        <button onclick="saveConcertEditFromModal(${rehearsalNum})" class="btn" style="padding: 8px 16px;">Save Changes</button>
+      </div>
+    `;
+  } else {
+    // Original rehearsal/sectional modal
+    modal.innerHTML = `
+      <div style="display: flex; justify-content: space-between; align-items: start; margin-bottom: 20px;">
+        <h3 style="margin: 0; font-size: 18px; font-weight: 600; color: #111827;">Edit Event ${rehearsalNum}</h3>
+        <button onclick="document.getElementById('rehearsalEditModalOverlay')?.remove()" style="background: none; border: none; font-size: 24px; color: #6b7280; cursor: pointer; padding: 0; line-height: 1;">&times;</button>
+      </div>
+      
+      <div style="margin-bottom: 16px;">
+        <label style="display: block; font-size: 14px; font-weight: 500; color: #374151; margin-bottom: 8px;">Date</label>
+        <input type="date" id="editDate" value="${date}" style="width: 100%; padding: 10px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 14px; box-sizing: border-box;">
+        <small style="color: #6b7280; display: block; margin-top: 4px;">Date of the rehearsal</small>
+      </div>
+      
+      <div style="margin-bottom: 16px;">
+        <label style="display: block; font-size: 14px; font-weight: 500; color: #374151; margin-bottom: 8px;">Include in allocation</label>
+        <select id="editIncludeInAllocation" style="width: 100%; padding: 10px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 14px; box-sizing: border-box;">
+          <option value="Y" ${includeInAllocation === 'Y' ? 'selected' : ''}>Yes - Include in timing allocation</option>
+          <option value="N" ${includeInAllocation === 'N' ? 'selected' : ''}>No - Exclude (sectional/concert)</option>
+        </select>
+        <small style="color: #6b7280; display: block; margin-top: 4px;">Whether to include in work allocation timing</small>
+      </div>
+      
+      <div style="margin-bottom: 16px;">
+        <label style="display: block; font-size: 14px; font-weight: 500; color: #374151; margin-bottom: 8px;">Event Type</label>
+        <select id="editEventType" style="width: 100%; padding: 10px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 14px; box-sizing: border-box;">
+          <option value="Rehearsal" ${eventType === 'Rehearsal' ? 'selected' : ''}>Rehearsal</option>
+          <option value="Sectional" ${eventType === 'Sectional' ? 'selected' : ''}>Sectional</option>
+          <option value="Concert" ${eventType === 'Concert' ? 'selected' : ''}>Concert</option>
+        </select>
+        <small style="color: #6b7280; display: block; margin-top: 4px;">Type of event (Rehearsal, Sectional, or Concert)</small>
+      </div>
+      
+      <div style="margin-bottom: 16px;">
+        <label style="display: block; font-size: 14px; font-weight: 500; color: #374151; margin-bottom: 8px;">Ensemble/Section</label>
+        <input type="text" id="editSection" value="${section || 'Full Ensemble'}" placeholder="e.g., Cornets, Flutes, Full Ensemble" style="width: 100%; padding: 10px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 14px; box-sizing: border-box;">
+        <small style="color: #6b7280; display: block; margin-top: 4px;">Which ensemble section performs this rehearsal</small>
+      </div>
+      
+      <div style="margin-bottom: 16px;">
+        <label style="display: block; font-size: 14px; font-weight: 500; color: #374151; margin-bottom: 8px;">Start Time (HH:MM)</label>
+        <input type="text" id="editStartTime" value="${startTime}" placeholder="e.g., 14:00" style="width: 100%; padding: 10px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 14px; box-sizing: border-box;">
+        <small style="color: #6b7280; display: block; margin-top: 4px;">Rehearsal start time</small>
+      </div>
+      
+      <div style="margin-bottom: 20px;">
+        <label style="display: block; font-size: 14px; font-weight: 500; color: #374151; margin-bottom: 8px;">End Time (HH:MM)</label>
+        <input type="text" id="editEndTime" value="${endTime}" placeholder="e.g., 17:00" style="width: 100%; padding: 10px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 14px; box-sizing: border-box;">
+        <small style="color: #6b7280; display: block; margin-top: 4px;">Rehearsal end time</small>
+      </div>
+      
+      <div style="display: flex; gap: 8px; justify-content: flex-end;">
+        <button onclick="document.getElementById('rehearsalEditModalOverlay')?.remove()" class="btn secondary" style="padding: 8px 16px;">Cancel</button>
+        <button onclick="saveRehearsalEditFromModal(${rehearsalNum})" class="btn" style="padding: 8px 16px;">Save Changes</button>
+      </div>
+    `;
+  }
+  
+  overlay.appendChild(modal);
+  document.body.appendChild(overlay);
+  
+  // Add Enter key handler
+  const handleEnter = (e) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      if (isConcert) {
+        saveConcertEditFromModal(rehearsalNum);
+      } else {
+        saveRehearsalEditFromModal(rehearsalNum);
+      }
+    }
+  };
+  
+  modal.addEventListener('keydown', handleEnter);
+  
+  // Focus appropriate input
+  setTimeout(() => {
+    const focusElement = isConcert ? document.getElementById('editConcertTitle') : document.getElementById('editDate');
+    focusElement?.focus();
+  }, 100);
+}
+
+/**
+ * Save rehearsal edits from the modal in editor.js context
+ */
+async function saveRehearsalEditFromModal(rehearsalNum) {
+  const dateInput = document.getElementById('editDate');
+  const startTimeInput = document.getElementById('editStartTime');
+  const endTimeInput = document.getElementById('editEndTime');
+  const includeInput = document.getElementById('editIncludeInAllocation');
+  const eventTypeInput = document.getElementById('editEventType');
+  const sectionInput = document.getElementById('editSection');
+  
+  if (!dateInput) return;
+  
+  const newDate = dateInput.value;
+  const newStartTime = startTimeInput?.value.trim() || '';
+  const newEndTime = endTimeInput?.value.trim() || '';
+  const newIncludeInAllocation = includeInput?.value || 'Y';
+  const newEvent = eventTypeInput?.value || 'Rehearsal';
+  const newSection = sectionInput?.value.trim() || 'Full Ensemble';
+  
+  console.log("Save form values - Date:", newDate, "Start:", newStartTime, "End:", newEndTime, "Include:", newIncludeInAllocation, "Event:", newEvent, "Section:", newSection);
+  
+  try {
+    // Call API to update rehearsal details - apiBase already includes /api/s/{scheduleId}
+    const url = `${apiBase()}/rehearsal/${rehearsalNum}`;
+    console.log("Saving to URL:", url);
+    
+    const payloadBody = {
+      date: newDate,
+      start_time: newStartTime,
+      end_time: newEndTime,
+      include_in_allocation: newIncludeInAllocation,
+      event: newEvent,
+      section: newSection
+    };
+    console.log("Payload being sent:", payloadBody);
+    
+    const res = await fetch(url, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      credentials: "same-origin",
+      body: JSON.stringify(payloadBody)
+    });
+    
+    if (!res.ok) {
+      const errorText = await res.text();
+      console.error("Error updating rehearsal:", errorText);
+      alert("Failed to save rehearsal changes: " + errorText);
+      return;
+    }
+    
+    const result = await res.json();
+    console.log("Rehearsal updated:", result);
+    
+    // Close modal - find and remove the overlay by ID
+    const overlay = document.getElementById('rehearsalEditModalOverlay');
+    if (overlay) overlay.remove();
+    
+    // Reload schedule data from server
+    await refreshFromServer();
+    
+  } catch (e) {
+    console.error("Error saving rehearsal:", e);
+    alert("Failed to save rehearsal: " + e.message);
+  }
+}
+
+/**
+ * Save concert edits from the modal in editor.js context
+ */
+async function saveConcertEditFromModal(rehearsalNum) {
+  const titleInput = document.getElementById('editConcertTitle');
+  const dateInput = document.getElementById('editConcertDate');
+  const timeInput = document.getElementById('editConcertTime');
+  const venueInput = document.getElementById('editConcertVenue');
+  const uniformInput = document.getElementById('editConcertUniform');
+  const programmeInput = document.getElementById('editConcertProgramme');
+  const otherInfoInput = document.getElementById('editConcertOtherInfo');
+  
+  if (!titleInput || !dateInput) return;
+  
+  const title = titleInput.value.trim() || 'Concert';
+  const date = dateInput.value;
+  const time = timeInput?.value.trim() || '';
+  const venue = venueInput?.value.trim() || '';
+  const uniform = uniformInput?.value.trim() || '';
+  const programme = programmeInput?.value.trim() || '';
+  const otherInfo = otherInfoInput?.value.trim() || '';
+  
+  try {
+    // Find the concert_id from STATE.rehearsals (more reliable than timed data)
+    let concertId = null;
+    console.log('[CONCERT EDIT] Looking for concert_id for rehearsal', rehearsalNum);
+    
+    // First try to find concert_id from rehearsals table
+    if (STATE.rehearsals && Array.isArray(STATE.rehearsals)) {
+      const rehearsalRow = STATE.rehearsals.find(r => parseInt(r.Rehearsal) === rehearsalNum);
+      console.log('[CONCERT EDIT] Found rehearsal row:', rehearsalRow);
+      
+      if (rehearsalRow) {
+        concertId = rehearsalRow.concert_id;
+        console.log('[CONCERT EDIT] concert_id from rehearsal row:', concertId);
+      }
+    }
+    
+    // Fallback: try to find from timed data
+    if (!concertId && STATE.timed && Array.isArray(STATE.timed)) {
+      const timedRow = STATE.timed.find(t => parseInt(t.Rehearsal) === rehearsalNum);
+      if (timedRow && timedRow.concert_id) {
+        concertId = timedRow.concert_id;
+        console.log('[CONCERT EDIT] concert_id from timed row:', concertId);
+      }
+    }
+    
+    // Final fallback: try to find from concerts array by matching rehearsal number date
+    if (!concertId && STATE.concerts && Array.isArray(STATE.concerts)) {
+      const rehearsalRow = STATE.rehearsals?.find(r => parseInt(r.Rehearsal) === rehearsalNum);
+      if (rehearsalRow) {
+        const rehearsalDate = rehearsalRow.Date;
+        const concert = STATE.concerts.find(c => c.date === rehearsalDate);
+        if (concert) {
+          concertId = concert.id;
+          console.log('[CONCERT EDIT] concert_id from concerts array:', concertId);
+        }
+      }
+    }
+    
+    console.log('[CONCERT EDIT] Final concert_id:', concertId);
+    
+    if (!concertId) {
+      alert("Concert ID not found. Please ensure this is a concert event and try refreshing the page.");
+      console.error('[CONCERT EDIT] Concert ID not found. STATE:', { rehearsals: STATE.rehearsals, timed: STATE.timed, concerts: STATE.concerts });
+      return;
+    }
+    
+    // Call API to update concert details using schedule-specific endpoint
+    // apiBase() already includes /api/s/<schedule_id>[?token]; just append concert path
+    const url = `${apiBase()}/concert/${concertId}`;
+    
+    const payloadBody = {
+      title: title,
+      date: date,
+      time: time,
+      venue: venue,
+      uniform: uniform,
+      programme: programme,
+      other_info: otherInfo
+    };
+    
+    console.log('[CONCERT EDIT] Updating concert via:', url, 'with data:', payloadBody);
+    
+    const res = await fetch(url, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      credentials: "same-origin",
+      body: JSON.stringify(payloadBody)
+    });
+    
+    if (!res.ok) {
+      const errorText = await res.text();
+      console.error("Error updating concert:", errorText);
+      alert("Failed to save concert changes: " + errorText);
+      return;
+    }
+    
+    const result = await res.json();
+    console.log("Concert updated:", result);
+    
+    // Close modal
+    const overlay = document.getElementById('rehearsalEditModalOverlay');
+    if (overlay) overlay.remove();
+    
+    // Reload schedule data from server to get updated values
+    await refreshFromServer();
+    
+    // Regenerate schedule to update timeline positions
+    console.log('[CONCERT EDIT] Regenerating schedule to update timeline...');
+    await generateSchedule();
+    
+    alert('Concert updated successfully! Timeline has been refreshed.');
+    
+  } catch (e) {
+    console.error("Error saving concert:", e);
+    alert("Failed to save concert: " + e.message);
+  }
+}
+
+/**
+ * Open modal to add a new rehearsal with Date, Start Time, End Time, Section
+ */
+function openAddEventModal() {
+  // Create modal overlay
+  const overlay = document.createElement("div");
+  overlay.id = "addRehearsalModalOverlay";
+  overlay.style.cssText = `
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: rgba(0,0,0,0.5);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 10000;
+  `;
+  
+  // Create modal content
+  const modal = document.createElement("div");
+  modal.id = "addEventModal";
+  modal.style.cssText = `
+    background: white;
+    border-radius: 8px;
+    padding: 24px;
+    max-width: 500px;
+    width: 90%;
+    max-height: 80vh;
+    overflow-y: auto;
+    box-shadow: 0 20px 25px -5px rgba(0,0,0,0.1), 0 10px 10px -5px rgba(0,0,0,0.04);
+  `;
+  
+  // Calculate next event number
+  const nextNum = Math.max(0, ...STATE.rehearsals.map(r => parseInt(r.Rehearsal || 0))) + 1;
+  
+  // Get tomorrow's date as default
+  const tomorrow = new Date();
+  tomorrow.setDate(tomorrow.getDate() + 1);
+  const defaultDate = tomorrow.toISOString().substring(0, 10);
+  
+  modal.innerHTML = `
+    <div style="display: flex; justify-content: space-between; align-items: start; margin-bottom: 20px;">
+      <h3 style="margin: 0; font-size: 18px; font-weight: 600; color: #111827;">Add New Event</h3>
+      <button onclick="document.getElementById('addRehearsalModalOverlay')?.remove()" style="background: none; border: none; font-size: 24px; color: #6b7280; cursor: pointer; padding: 0; line-height: 1;">&times;</button>
+    </div>
+    
+    <div style="margin-bottom: 20px;">
+      <label style="display: block; font-size: 14px; font-weight: 500; color: #374151; margin-bottom: 8px;">Event Type</label>
+      <select id="addEventType" onchange="updateEventFormFields()" style="width: 100%; padding: 10px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 14px; box-sizing: border-box;">
+        <option value="Rehearsal" selected>Rehearsal</option>
+        <option value="Concert">Concert</option>
+        <option value="Sectional">Sectional</option>
+      </select>
+      <small style="color: #6b7280; display: block; margin-top: 4px;">Select the type of event</small>
+    </div>
+
+    <div id="eventFormFields">
+      <!-- Fields will be dynamically inserted here -->
+    </div>
+    
+    <div style="display: flex; gap: 8px; justify-content: flex-end; margin-top: 20px;">
+      <button onclick="document.getElementById('addRehearsalModalOverlay')?.remove()" class="btn secondary" style="padding: 8px 16px;">Cancel</button>
+      <button onclick="(async () => await saveAddEventFromModal())()" class="btn" style="padding: 8px 16px;"><span id="createButtonText">Create Rehearsal</span></button>
+    </div>
+  `;
+  
+  overlay.appendChild(modal);
+  document.body.appendChild(overlay);
+  
+  // Initial form fields for Rehearsal
+  updateEventFormFields();
+  
+  // Add Enter key handler
+  modal.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      saveAddEventFromModal();
+    }
+  });
+}
+
+function updateEventFormFields() {
+  const eventType = document.getElementById('addEventType')?.value || 'Rehearsal';
+  const fieldsContainer = document.getElementById('eventFormFields');
+  const buttonText = document.getElementById('createButtonText');
+  
+  if (!fieldsContainer) return;
+  
+  // Calculate next event number
+  const nextNum = Math.max(0, ...STATE.rehearsals.map(r => parseInt(r.Rehearsal || 0))) + 1;
+  
+  // Get tomorrow's date as default
+  const tomorrow = new Date();
+  tomorrow.setDate(tomorrow.getDate() + 1);
+  const defaultDate = tomorrow.toISOString().substring(0, 10);
+  
+  // Update button text
+  if (buttonText) {
+    buttonText.textContent = `Create ${eventType}`;
+  }
+  
+  // Common fields for all types
+  let html = `
+    <div style="margin-bottom: 16px;">
+      <label style="display: block; font-size: 14px; font-weight: 500; color: #374151; margin-bottom: 8px;">Number</label>
+      <input type="number" id="addEventNumber" value="${nextNum}" min="1" style="width: 100%; padding: 10px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 14px; box-sizing: border-box;">
+      <small style="color: #6b7280; display: block; margin-top: 4px;">Sequential number (auto-calculated)</small>
+    </div>
+    
+    <div style="margin-bottom: 16px;">
+      <label style="display: block; font-size: 14px; font-weight: 500; color: #374151; margin-bottom: 8px;">Date</label>
+      <input type="date" id="addEventDate" value="${defaultDate}" style="width: 100%; padding: 10px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 14px; box-sizing: border-box;">
+      <small style="color: #6b7280; display: block; margin-top: 4px;">Date of the ${eventType.toLowerCase()}</small>
+    </div>
+  `;
+  
+  if (eventType === 'Rehearsal') {
+    html += `
+      <div style="margin-bottom: 16px;">
+        <label style="display: block; font-size: 14px; font-weight: 500; color: #374151; margin-bottom: 8px;">Start Time (HH:MM)</label>
+        <input type="text" id="addEventStartTime" value="14:00" placeholder="e.g., 14:00" style="width: 100%; padding: 10px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 14px; box-sizing: border-box;">
+      </div>
+      
+      <div style="margin-bottom: 16px;">
+        <label style="display: block; font-size: 14px; font-weight: 500; color: #374151; margin-bottom: 8px;">End Time (HH:MM)</label>
+        <input type="text" id="addEventEndTime" value="17:00" placeholder="e.g., 17:00" style="width: 100%; padding: 10px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 14px; box-sizing: border-box;">
+      </div>
+      
+      <div style="margin-bottom: 16px;">
+        <label style="display: block; font-size: 14px; font-weight: 500; color: #374151; margin-bottom: 8px;">Section</label>
+        <input type="text" id="addEventSection" value="Full Ensemble" placeholder="e.g., Full Ensemble" style="width: 100%; padding: 10px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 14px; box-sizing: border-box;">
+      </div>
+    `;
+  } else if (eventType === 'Concert') {
+    html += `
+      <div style="margin-bottom: 16px;">
+        <label style="display: block; font-size: 14px; font-weight: 500; color: #374151; margin-bottom: 8px;">Concert Time (HH:MM)</label>
+        <input type="text" id="addEventTime" value="19:00" placeholder="e.g., 19:00" style="width: 100%; padding: 10px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 14px; box-sizing: border-box;">
+      </div>
+      
+      <div style="margin-bottom: 16px;">
+        <label style="display: block; font-size: 14px; font-weight: 500; color: #374151; margin-bottom: 8px;">Venue</label>
+        <input type="text" id="addEventVenue" placeholder="e.g., Royal Albert Hall" style="width: 100%; padding: 10px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 14px; box-sizing: border-box;">
+      </div>
+      
+      <div style="margin-bottom: 16px;">
+        <label style="display: block; font-size: 14px; font-weight: 500; color: #374151; margin-bottom: 8px;">Uniform</label>
+        <input type="text" id="addEventUniform" placeholder="e.g., Black Tie" style="width: 100%; padding: 10px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 14px; box-sizing: border-box;">
+      </div>
+    `;
+  } else if (eventType === 'Sectional') {
+    html += `
+      <div style="margin-bottom: 16px;">
+        <label style="display: block; font-size: 14px; font-weight: 500; color: #374151; margin-bottom: 8px;">Start Time (HH:MM)</label>
+        <input type="text" id="addEventStartTime" value="14:00" placeholder="e.g., 14:00" style="width: 100%; padding: 10px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 14px; box-sizing: border-box;">
+      </div>
+      
+      <div style="margin-bottom: 16px;">
+        <label style="display: block; font-size: 14px; font-weight: 500; color: #374151; margin-bottom: 8px;">End Time (HH:MM)</label>
+        <input type="text" id="addEventEndTime" value="17:00" placeholder="e.g., 17:00" style="width: 100%; padding: 10px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 14px; box-sizing: border-box;">
+      </div>
+      
+      <div style="margin-bottom: 16px;">
+        <label style="display: block; font-size: 14px; font-weight: 500; color: #374151; margin-bottom: 8px;">Section</label>
+        <input type="text" id="addEventSection" value="" placeholder="e.g., Violin 1, Woodwinds" style="width: 100%; padding: 10px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 14px; box-sizing: border-box;">
+        <small style="color: #6b7280; display: block; margin-top: 4px;">Which section this is for</small>
+      </div>
+    `;
+  }
+  
+  fieldsContainer.innerHTML = html;
+  
+  // Focus the date input
+  setTimeout(() => document.getElementById('addEventDate')?.focus(), 100);
+}
+
+function openAddRehearsalModal() {
+  openAddEventModal();
+}
+
+/**
+ * Save new event from the add modal
+ */
+async function saveAddEventFromModal() {
+  const eventType = document.getElementById('addEventType')?.value || 'Rehearsal';
+  const numInput = document.getElementById('addEventNumber');
+  const dateInput = document.getElementById('addEventDate');
+  
+  if (!numInput || !dateInput) {
+    alert("Please fill in all required fields");
+    return;
+  }
+  
+  const eventNum = numInput.value.trim();
+  const date = dateInput.value;
+  
+  // Validate inputs
+  if (!eventNum || !date) {
+    alert("Please fill in Number and Date");
+    return;
+  }
+  
+  // Get type-specific fields
+  let startTime = '';
+  let endTime = '';
+  let section = 'Full Ensemble';
+  let includeInAllocation = 'N'; // Concerts and Sectionals excluded by default
+  let eventField = eventType; // For the Event column
+  
+  if (eventType === 'Rehearsal') {
+    startTime = document.getElementById('addEventStartTime')?.value.trim() || '';
+    endTime = document.getElementById('addEventEndTime')?.value.trim() || '';
+    section = document.getElementById('addEventSection')?.value.trim() || 'Full Ensemble';
+    includeInAllocation = 'Y'; // Rehearsals included by default
+    eventField = ''; // Regular rehearsals don't have an Event value
+  } else if (eventType === 'Concert') {
+    const time = document.getElementById('addEventTime')?.value.trim() || '';
+    startTime = time;
+    endTime = time;
+    section = 'Full Ensemble';
+    eventField = 'Concert';
+  } else if (eventType === 'Sectional') {
+    startTime = document.getElementById('addEventStartTime')?.value.trim() || '';
+    endTime = document.getElementById('addEventEndTime')?.value.trim() || '';
+    section = document.getElementById('addEventSection')?.value.trim() || '';
+    eventField = 'Sectional';
+  }
+  
+  // Create new row matching rehearsals_cols structure
+  const newRow = {};
+  STATE.rehearsals_cols.forEach(c => {
+    if (c === 'Rehearsal') newRow[c] = rehNum;
+    else if (c === 'Date') newRow[c] = date;
+    else if (c === 'Start Time') newRow[c] = startTime;
+    else if (c === 'End Time') newRow[c] = endTime;
+    else if (c === 'Section') newRow[c] = section;
+    else if (c === 'Include in allocation') newRow[c] = includeInAllocation;
+    else if (c === 'Event' || c === 'Event Type') newRow[c] = eventField;
+    else newRow[c] = '';
+  });
+  
+  // Add to STATE
+  STATE.rehearsals.push(newRow);
+  
+  // Sort and renumber chronologically
+  sortAndRenumberRehearsals();
+  
+  // Save to server
+  await saveInputs();
+  
+  // Close modal
+  const overlay = document.getElementById('addRehearsalModalOverlay');
+  if (overlay) overlay.remove();
+  
+  // Re-render rehearsals table
+  renderTable("rehearsals-table", STATE.rehearsals, STATE.rehearsals_cols, saveInputs);
+  
+  console.log(`New ${eventType} added:`, newRow);
+}
+
+/**
+ * Save new rehearsal from the add modal (backward compatibility)
+ */
+async function saveAddRehearsalFromModal() {
+  saveAddEventFromModal();
 }
 
 function addWorkToTimeline(work, rehearsalNum, duration, position) {
@@ -3348,6 +4247,9 @@ window.initEditor = initEditor;
 window.uploadXlsx = uploadXlsx;
 window.addWorkRow = addWorkRow;
 window.addRehearsalRow = addRehearsalRow;
+window.addEventRow = addEventRow;
+window.updateEventFormFields = updateEventFormFields;
+window.saveAddEventFromModal = saveAddEventFromModal;
 window.runAllocation = runAllocation;
 window.generateSchedule = generateSchedule;
 window.saveInputs = saveInputs;

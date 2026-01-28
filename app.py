@@ -116,7 +116,41 @@ def list_schedule_ids() -> list[str]:
 
 def load_schedule(schedule_id: str) -> dict:
     p = schedule_path(schedule_id)
-    return read_json(p, None) or {}  # see safe read_json note below
+    s = read_json(p, None) or {}  # see safe read_json note below
+    
+    # Ensure all rehearsals have the "Include in allocation" column
+    if "rehearsals" in s:
+        s["rehearsals"] = ensure_include_in_allocation_column(s["rehearsals"])
+    
+    # Ensure all rehearsals have the "Section" column
+    if "rehearsals" in s:
+        s["rehearsals"] = ensure_section_column(s["rehearsals"])
+    
+    # Ensure all rehearsals have the "Event Type" column
+    if "rehearsals" in s:
+        s["rehearsals"] = ensure_event_type_column(s["rehearsals"])
+    
+    # Ensure rehearsals_cols includes "Event Type", "Section", "Include in allocation" (for old schedules)
+    if "rehearsals" in s and s["rehearsals"] and isinstance(s["rehearsals"], list) and len(s["rehearsals"]) > 0:
+        # If rehearsals_cols doesn't exist or is incomplete, rebuild it from actual rehearsal data
+        if "rehearsals_cols" not in s or not s["rehearsals_cols"]:
+            # Use all columns from the first rehearsal row (if it's a dict)
+            if isinstance(s["rehearsals"][0], dict):
+                s["rehearsals_cols"] = list(s["rehearsals"][0].keys())
+        else:
+            cols = s["rehearsals_cols"]
+            # Add missing columns that should always be present
+            for required_col in ["Include in allocation", "Section", "Event Type"]:
+                if required_col not in cols:
+                    if required_col == "Event Type" and "Include in allocation" in cols:
+                        # Insert "Event Type" after "Include in allocation"
+                        idx = cols.index("Include in allocation") + 1
+                        cols.insert(idx, "Event Type")
+                    else:
+                        cols.append(required_col)
+            s["rehearsals_cols"] = cols
+    
+    return s
 
 def save_schedule(s: dict):
     if "id" not in s:
@@ -312,6 +346,211 @@ def sanitize_df_records(records: List[dict]) -> List[dict]:
     return result
 
 
+def clean_timed_data(timed: List[dict]) -> List[dict]:
+    """Clean timed data: fill missing Section values with 'Full Ensemble'."""
+    if not isinstance(timed, list):
+        return timed
+    
+    # Convert to DataFrame for easier manipulation
+    if not timed:
+        return timed
+    
+    df = pd.DataFrame(timed)
+    if "Section" not in df.columns:
+        df["Section"] = "Full Ensemble"
+    else:
+        # Fill any NaN or empty Section values with "Full Ensemble"
+        df["Section"] = df["Section"].fillna("Full Ensemble")
+        df["Section"] = df["Section"].astype(str).replace("nan", "Full Ensemble")
+        # Also replace empty strings
+        df.loc[df["Section"].str.strip() == "", "Section"] = "Full Ensemble"
+    
+    # Convert back to list of dicts
+    return df.to_dict(orient="records")
+
+
+def ensure_include_in_allocation_column(rehearsals: List[dict]) -> List[dict]:
+    """Ensure all rehearsals have 'Include in allocation' column, defaulting to 'Y'."""
+    if not isinstance(rehearsals, list):
+        return rehearsals
+    
+    if not rehearsals:
+        return rehearsals
+    
+    # Add missing column with default value 'Y'
+    for row in rehearsals:
+        if "Include in allocation" not in row or pd.isna(row.get("Include in allocation")):
+            row["Include in allocation"] = "Y"
+    
+    return rehearsals
+
+
+def normalize_section_column(rehearsals: List[dict]) -> List[dict]:
+    """Normalize 'Ensemble' column to 'Section' if present, then clean up.
+    
+    This allows Excel files to use either "Ensemble" or "Section" column names.
+    If both exist, "Section" takes priority. If neither exists, defaults to "Full Ensemble".
+    """
+    if not isinstance(rehearsals, list):
+        return rehearsals
+    
+    if not rehearsals:
+        return rehearsals
+    
+    # Check if first row has "Ensemble" but not "Section"
+    for row in rehearsals:
+        if "Ensemble" in row and "Section" not in row:
+            # Rename "Ensemble" to "Section"
+            row["Section"] = row.pop("Ensemble")
+        elif "Ensemble" in row and "Section" in row:
+            # Both exist, keep "Section" and remove "Ensemble"
+            row.pop("Ensemble")
+    
+    return rehearsals
+
+
+def ensure_section_column(rehearsals: List[dict]) -> List[dict]:
+    """Ensure all rehearsals have 'Section' column, defaulting to 'Full Ensemble'."""
+    if not isinstance(rehearsals, list):
+        return rehearsals
+    
+    if not rehearsals:
+        return rehearsals
+    
+    # Add missing column with default value 'Full Ensemble'
+    for row in rehearsals:
+        if "Section" not in row or not row.get("Section") or pd.isna(row.get("Section")):
+            row["Section"] = "Full Ensemble"
+        else:
+            # Clean up section value
+            row["Section"] = str(row.get("Section", "Full Ensemble")).strip()
+            if not row["Section"]:
+                row["Section"] = "Full Ensemble"
+    
+    return rehearsals
+
+
+def ensure_event_type_column(rehearsals: List[dict]) -> List[dict]:
+    """Ensure all rehearsals have 'Event Type' column, defaulting to 'Rehearsal'.
+    
+    Automatically detects event type from alternative field names:
+    - "event", "Event", "event type", "Event Type", "Event_Type", "event_type", etc.
+    This allows users to have an 'event' field in their Excel import that auto-populates Event Type.
+    """
+    if not isinstance(rehearsals, list):
+        return rehearsals
+    
+    if not rehearsals:
+        return rehearsals
+    
+    # Possible alternate field names for event type (case-insensitive)
+    ALTERNATE_FIELDS = ["event", "event type", "event_type", "eventtype"]
+    
+    # Add missing column with default value 'Rehearsal'
+    for row in rehearsals:
+        event_type_found = None
+        
+        # FIRST: Check for alternate field names (like "event", "Event") - prioritize these
+        for key in row.keys():
+            key_lower = key.lower().replace(" ", "").replace("_", "")
+            if key_lower in ALTERNATE_FIELDS:
+                value = row.get(key, "")
+                # Check if value is not empty and not NaN
+                if value is not None and value != "" and not pd.isna(value):
+                    event_type_found = str(value).strip()
+                    break
+        
+        # SECOND: If no alternate field found, check if Event Type is already set and valid
+        if not event_type_found:
+            existing_value = row.get("Event Type", "")
+            if existing_value and not pd.isna(existing_value):
+                event_type_found = str(existing_value).strip()
+        
+        # Now normalize the found value to standard values
+        if event_type_found:
+            if event_type_found.lower() in ["concert", "sectional", "rehearsal"]:
+                row["Event Type"] = event_type_found.lower().capitalize()
+            else:
+                row["Event Type"] = "Rehearsal"
+        else:
+            # Default to Rehearsal
+            row["Event Type"] = "Rehearsal"
+    
+    return rehearsals
+
+
+def upsert_concert_timed_rows(
+    timed_data: List[dict],
+    rehearsal_num: int,
+    concert_info: dict,
+    section: str = "Full Ensemble",
+) -> List[dict]:
+    """Update or insert timed rows for a concert rehearsal without wiping other edits."""
+    if rehearsal_num is None:
+        return clean_timed_data(timed_data)
+
+    concert_id = concert_info.get("id")
+    concert_date = concert_info.get("date")
+    concert_time = concert_info.get("time") or concert_info.get("start_time")
+    concert_title = concert_info.get("title") or "Concert"
+    updated_any = False
+
+    for row in timed_data:
+        if int(row.get("Rehearsal", 0)) == int(rehearsal_num):
+            row["Event Type"] = "Concert"
+            if concert_id:
+                row["concert_id"] = concert_id
+            if concert_date:
+                row["Date"] = concert_date
+            if concert_time:
+                row["Time in Rehearsal"] = concert_time
+            row["Section"] = row.get("Section") or section or "Full Ensemble"
+            if not row.get("Title"):
+                row["Title"] = concert_title
+            updated_any = True
+
+    if not updated_any:
+        timed_data.append({
+            "Rehearsal": rehearsal_num,
+            "Date": concert_date or "",
+            "Title": concert_title,
+            "Time in Rehearsal": concert_time or "19:00",
+            "Break Start (HH:MM)": "",
+            "Break End (HH:MM)": "",
+            "Section": section or "Full Ensemble",
+            "Event Type": "Concert",
+            "concert_id": concert_id,
+        })
+
+    return clean_timed_data(timed_data)
+
+
+def auto_number_rehearsals(rehearsals: List[dict]) -> List[dict]:
+    """Auto-assign sequential Rehearsal numbers if missing or empty."""
+    if not isinstance(rehearsals, list) or not rehearsals:
+        return rehearsals
+    
+    # Check if Rehearsal column needs numbering
+    df = pd.DataFrame(rehearsals)
+    if "Rehearsal" not in df.columns:
+        # Add Rehearsal column with sequential numbers
+        df["Rehearsal"] = range(1, len(df) + 1)
+    else:
+        # Fill empty/NaN rehearsal numbers with sequential numbers
+        empty_mask = df["Rehearsal"].astype(str).str.strip().eq("") | df["Rehearsal"].isna()
+        if empty_mask.any():
+            # Get existing numbers to avoid conflicts
+            existing_nums = pd.to_numeric(df["Rehearsal"], errors="coerce").dropna().astype(int).unique()
+            next_num = max(existing_nums.tolist() + [0]) + 1
+            
+            # Fill empty ones with sequential numbers
+            fill_count = 0
+            for idx in df[empty_mask].index:
+                df.at[idx, "Rehearsal"] = str(next_num + fill_count)
+                fill_count += 1
+    
+    return df.fillna("").to_dict(orient="records")
+
 
 def users_path() -> str:
     return os.path.join(DATA_DIR, "users.json")
@@ -344,6 +583,183 @@ def load_ensembles() -> List[dict]:
 
 def save_ensembles(ensembles: List[dict]):
     write_json_atomic(ensembles_path(), ensembles)
+
+
+def get_ensemble_by_id(ensemble_id: str) -> Optional[dict]:
+    """Get a single ensemble by ID."""
+    ensembles = load_ensembles()
+    return next((e for e in ensembles if e.get("id") == ensemble_id), None)
+
+
+def ensure_ensemble_concerts(ensembles: List[dict]) -> List[dict]:
+    """Ensure each ensemble has a 'concerts' array."""
+    for ens in ensembles:
+        if "concerts" not in ens:
+            ens["concerts"] = []
+    return ensembles
+
+
+def add_concert_to_ensemble(ensemble_id: str, concert_data: dict) -> dict:
+    """Add a concert to an ensemble and save."""
+    ensembles = load_ensembles()
+    ensembles = ensure_ensemble_concerts(ensembles)
+    
+    ensemble = next((e for e in ensembles if e.get("id") == ensemble_id), None)
+    if not ensemble:
+        raise ValueError(f"Ensemble {ensemble_id} not found")
+    
+    # Create concert object with auto-generated fields
+    concert = {
+        "id": f"concert_{uuid.uuid4().hex[:10]}",
+        "title": concert_data.get("title"),
+        "date": concert_data.get("date"),
+        "time": concert_data.get("time"),
+        "venue": concert_data.get("venue"),
+        "uniform": concert_data.get("uniform"),
+        "programme": concert_data.get("programme", ""),
+        "other_info": concert_data.get("other_info", ""),
+        "schedule_id": concert_data.get("schedule_id"),  # Optional link to rehearsal schedule
+        "status": concert_data.get("status", "scheduled"),  # scheduled | completed | cancelled
+        "created_at": int(time.time()),
+    }
+    
+    ensemble["concerts"].append(concert)
+    save_ensembles(ensembles)
+    return concert
+
+
+def _format_concert_title(ensemble_name: str, date_str: str) -> str:
+    """Generate default concert title with ordinal date suffix."""
+    try:
+        dt = pd.to_datetime(date_str)
+        day = dt.day
+        if 10 <= day % 100 <= 20:
+            suffix = 'th'
+        else:
+            suffix = {1: 'st', 2: 'nd', 3: 'rd'}.get(day % 10, 'th')
+        formatted_date = dt.strftime(f"%A %B {day}{suffix}")
+        return f"{{ensemble_name}} - Concert - {formatted_date}"
+    except Exception:
+        return f"{{ensemble_name}} - Concert"
+
+
+def update_concert(ensemble_id: str, concert_id: str, concert_data: dict) -> Optional[dict]:
+    """Update a concert in an ensemble."""
+    ensembles = load_ensembles()
+    ensembles = ensure_ensemble_concerts(ensembles)
+    
+    ensemble = next((e for e in ensembles if e.get("id") == ensemble_id), None)
+    if not ensemble:
+        return None
+    
+    concert = next((c for c in ensemble.get("concerts", []) if c.get("id") == concert_id), None)
+    if not concert:
+        return None
+    
+    # Track if date changed
+    old_date = concert.get("date")
+    new_date = concert_data.get("date", old_date)
+    date_changed = old_date != new_date
+    ensemble_name = ensemble.get("name", "Unknown Ensemble")
+
+    # Recompute default title if the concert still uses the default pattern or no title was provided
+    old_default_title = _format_concert_title(ensemble_name, old_date) if old_date else None
+    new_default_title = _format_concert_title(ensemble_name, new_date) if new_date else None
+    incoming_title = concert_data.get("title")
+    should_update_title = (
+        not incoming_title
+        or (old_default_title and concert.get("title") == old_default_title)
+    )
+    
+    # Update fields (preserve id and created_at)
+    if should_update_title and new_default_title:
+        concert["title"] = new_default_title
+    else:
+        concert["title"] = concert_data.get("title", concert.get("title"))
+    concert["date"] = new_date
+    concert["time"] = concert_data.get("time", concert["time"])
+    concert["venue"] = concert_data.get("venue", concert["venue"])
+    concert["uniform"] = concert_data.get("uniform", concert["uniform"])
+    concert["programme"] = concert_data.get("programme", concert["programme"])
+    concert["other_info"] = concert_data.get("other_info", concert["other_info"])
+    concert["schedule_id"] = concert_data.get("schedule_id", concert.get("schedule_id"))
+    concert["status"] = concert_data.get("status", concert["status"])
+    
+    save_ensembles(ensembles)
+    
+    # SYNC: Update corresponding rehearsal row in schedule
+    schedule_id = concert.get("schedule_id")
+    if schedule_id:
+        schedule = load_schedule(schedule_id)
+        if schedule:
+            updated_schedule = False
+            timed_data = schedule.get("timed", [])
+            for reh_row in schedule.get("rehearsals", []):
+                # Find rehearsal row by concert_id link (fallback to Event Type match without id)
+                if reh_row.get("concert_id") == concert_id or (
+                    reh_row.get("Event Type") == "Concert" and not reh_row.get("concert_id")
+                ):
+                    print(f"[UPDATE CONCERT] Syncing concert {concert_id} changes to rehearsal row")
+                    # Update rehearsal row with concert data
+                    reh_row["Date"] = new_date
+                    reh_row["Start Time"] = concert["time"]
+                    reh_row["Venue"] = concert["venue"]
+                    reh_row["Uniform"] = concert["uniform"]
+                    if not reh_row.get("concert_id"):
+                        reh_row["concert_id"] = concert_id
+                    updated_schedule = True
+
+                    rehearsal_num = int(reh_row.get("Rehearsal", 0))
+
+                    # Update or insert timed rows for this concert without wiping timeline edits
+                    timed_data = upsert_concert_timed_rows(
+                        timed_data,
+                        rehearsal_num,
+                        {
+                            "id": concert_id,
+                            "date": new_date,
+                            "time": concert.get("time"),
+                            "title": concert.get("title"),
+                        },
+                        reh_row.get("Section", "Full Ensemble"),
+                    )
+                    break
+            
+            if updated_schedule:
+                schedule["timed"] = timed_data
+                schedule["updated_at"] = int(time.time())
+                save_schedule(schedule)
+                print(f"[UPDATE CONCERT] Updated schedule {schedule_id} rehearsal table")
+    
+    return concert
+
+
+def delete_concert(ensemble_id: str, concert_id: str) -> bool:
+    """Delete a concert from an ensemble."""
+    ensembles = load_ensembles()
+    ensemble = next((e for e in ensembles if e.get("id") == ensemble_id), None)
+    if not ensemble:
+        return False
+    
+    concerts = ensemble.get("concerts", [])
+    original_len = len(concerts)
+    ensemble["concerts"] = [c for c in concerts if c.get("id") != concert_id]
+    
+    if len(ensemble["concerts"]) < original_len:
+        save_ensembles(ensembles)
+        return True
+    return False
+
+
+def get_ensemble_concerts(ensemble_id: str) -> List[dict]:
+    """Get all concerts for an ensemble, sorted by date."""
+    ensemble = get_ensemble_by_id(ensemble_id)
+    if not ensemble:
+        return []
+    concerts = ensemble.get("concerts", [])
+    # Sort by date descending (upcoming first)
+    concerts.sort(key=lambda x: x.get("date", ""), reverse=True)
+    return concerts
 
 
 def load_memberships() -> List[dict]:
@@ -458,7 +874,7 @@ mod3 = load_module_from_path("script3", SCRIPT3)
 mod4_exists = os.path.exists(SCRIPT4)
 
 
-def safe_int(x, default=0) -> int:
+def safe_int(x, default=0):
     try:
         if pd.isna(x):
             return default
@@ -558,7 +974,7 @@ def hhmm_from_minutes(m: int) -> str:
 # ----------------------------
 def default_works_df() -> pd.DataFrame:
     cols = [
-        "Title", "Duration", "Difficulty",
+        "Title", "Duration", "Difficulty", "Rehearsal Time Required",
         "Flute", "Oboe", "Clarinet", "Bassoon",
         "Horn", "Trumpet", "Trombone", "Tuba",
         "Violin 1", "Violin 2", "Viola", "Cello", "Bass",
@@ -568,7 +984,7 @@ def default_works_df() -> pd.DataFrame:
 
 
 def default_rehearsals_df() -> pd.DataFrame:
-    cols = ["Rehearsal", "Date", "Day", "Start Time", "End Time", "Break", "Percs", "Piano", "Harp", "Brass", "Soloist"]
+    cols = ["Rehearsal", "Date", "Day", "Include in allocation", "Event Type", "Section", "Start Time", "End Time", "Break", "Percs", "Piano", "Harp", "Brass", "Soloist"]
     return pd.DataFrame(columns=cols)
 
 
@@ -598,20 +1014,34 @@ def get_frames(s: dict) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.Da
     works = pd.DataFrame(s.get("works", []))
     if works_cols:
         # Use saved columns in saved order, fill missing columns with empty strings
-        works = works.reindex(columns=works_cols, fill_value="")
+        works = works.reindex(columns=works_cols).fillna("")
     else:
         # Fall back to defaults
-        works = works.reindex(columns=default_works_df().columns, fill_value="")
+        default_cols = default_works_df().columns.tolist()
+        # Only keep existing columns and add missing ones from defaults
+        existing_cols = [c for c in works.columns if c in default_cols]
+        missing_cols = [c for c in default_cols if c not in works.columns]
+        if missing_cols:
+            for col in missing_cols:
+                works[col] = ""
+        works = works[existing_cols + missing_cols]
     
     # Load rehearsals with saved column order if available
     rehearsals_cols = s.get("rehearsals_cols")
     rehearsals = pd.DataFrame(s.get("rehearsals", []))
     if rehearsals_cols:
         # Use saved columns in saved order, fill missing columns with empty strings
-        rehearsals = rehearsals.reindex(columns=rehearsals_cols, fill_value="")
+        rehearsals = rehearsals.reindex(columns=rehearsals_cols).fillna("")
     else:
         # Fall back to defaults
-        rehearsals = rehearsals.reindex(columns=default_rehearsals_df().columns, fill_value="")
+        default_cols = default_rehearsals_df().columns.tolist()
+        # Only keep existing columns and add missing ones from defaults
+        existing_cols = [c for c in rehearsals.columns if c in default_cols]
+        missing_cols = [c for c in default_cols if c not in rehearsals.columns]
+        if missing_cols:
+            for col in missing_cols:
+                rehearsals[col] = ""
+        rehearsals = rehearsals[existing_cols + missing_cols]
     
     alloc = pd.DataFrame(s.get("allocation", []))
     sched = pd.DataFrame(s.get("schedule", []))
@@ -691,12 +1121,97 @@ def prepare_works_for_allocator(works_df: pd.DataFrame) -> pd.DataFrame:
     return w2.reset_index(drop=True)
 
 
-def prepare_rehearsals_for_allocator(rehearsals_df: pd.DataFrame) -> pd.DataFrame:
+def prepare_all_rehearsals(rehearsals_df: pd.DataFrame) -> pd.DataFrame:
+    """Prepare all rehearsals (including non-allocated ones) for timed schedule generation.
+    Unlike prepare_rehearsals_for_allocator, this does NOT filter by "Include in allocation"."""
     r = rehearsals_df.copy()
+    print(f"[TIMING] Input rehearsals: {len(r)} rows")
+    
+    # Ensure required columns exist
+    if "Rehearsal" not in r.columns:
+        r = r.reindex(columns=default_rehearsals_df().columns, fill_value="")
+        print(f"[TIMING] WARNING: 'Rehearsal' column was missing, reindexed with defaults")
+    
+    # Process rehearsal numbers
     r = r[r["Rehearsal"].astype(str).str.strip().ne("")].copy()
     r["Rehearsal"] = pd.to_numeric(r["Rehearsal"], errors="coerce").astype("Int64")
     r = r[r["Rehearsal"].notna()].copy()
+    
+    # DO NOT FILTER by "Include in allocation" - we want all rehearsals for the timed schedule
+    print(f"[TIMING] Processing {len(r)} rehearsals (including non-allocated)")
+    
+    # Debug: Show Date column before conversion
+    print(f"[TIMING] Date column before conversion:")
+    for idx, row in r.iterrows():
+        reh_num = row.get("Rehearsal")
+        date_val = row.get("Date")
+        print(f"  Rehearsal {reh_num}: Date = {repr(date_val)} (type: {type(date_val).__name__})")
+    
+    r["Date"] = pd.to_datetime(r.get("Date"), errors="coerce").dt.date  # type: ignore
+    
+    # Debug: Show Date column after conversion
+    print(f"[TIMING] Date column after conversion:")
+    for idx, row in r.iterrows():
+        reh_num = row.get("Rehearsal")
+        date_val = row.get("Date")
+        print(f"  Rehearsal {reh_num}: Date = {repr(date_val)} (type: {type(date_val).__name__})")
 
+    start_min = r.get("Start Time").apply(minutes_from_timecell) if "Start Time" in r.columns else pd.Series([None]*len(r))  # type: ignore
+    end_min = r.get("End Time").apply(minutes_from_timecell) if "End Time" in r.columns else pd.Series([None]*len(r))  # type: ignore
+    start_min = start_min.fillna(19 * 60).astype(int)
+    end_min = end_min.fillna(21 * 60 + 30).astype(int)
+
+    gross = (end_min - start_min).astype(int)
+    gross = gross.where(gross >= 0, gross + 24 * 60)
+
+    br = r.get("Break").apply(parse_break_minutes) if "Break" in r.columns else pd.Series([0]*len(r))  # type: ignore
+    r["Break (minutes)"] = br.astype(int)
+    r["Duration"] = (gross - r["Break (minutes)"]).clip(lower=0).astype(int)
+
+    for c in ["Percs", "Piano", "Harp", "Brass", "Soloist"]:
+        if c not in r.columns:
+            r[c] = False
+        r[c] = r[c].apply(parse_truthy)
+
+    hh = (start_min // 60).astype(int).astype(str).str.zfill(2)
+    mm = (start_min % 60).astype(int).astype(str).str.zfill(2)
+    hhmm = hh + ":" + mm
+    date_str = np.where(pd.notna(pd.Series(r["Date"])), pd.Series(r["Date"]).astype(str), "2000-01-01")
+    r["Start DateTime"] = pd.to_datetime(date_str + " " + hhmm, errors="coerce").fillna(pd.to_datetime("2000-01-01 19:00"))
+
+    # Preserve Section column if it exists, otherwise default to "Full Ensemble"
+    if "Section" not in r.columns:
+        r["Section"] = "Full Ensemble"
+    else:
+        r["Section"] = r["Section"].fillna("Full Ensemble").astype(str)
+        r.loc[r["Section"].str.strip() == "", "Section"] = "Full Ensemble"
+
+    return r.sort_values("Rehearsal").reset_index(drop=True)
+
+
+def prepare_rehearsals_for_allocator(rehearsals_df: pd.DataFrame) -> pd.DataFrame:
+    r = rehearsals_df.copy()
+    print(f"[ALLOCATOR] Input rehearsals: {len(r)} rows")
+    
+    # Ensure required columns exist
+    if "Rehearsal" not in r.columns:
+        # Reindex to include all default columns
+        r = r.reindex(columns=default_rehearsals_df().columns, fill_value="")
+        print(f"[ALLOCATOR] WARNING: 'Rehearsal' column was missing, reindexed with defaults")
+    
+    if len(r) > 0:
+        print(f"[ALLOCATOR] Include in allocation values: {r.get('Include in allocation', pd.Series()).unique().tolist()}")
+    
+    r = r[r["Rehearsal"].astype(str).str.strip().ne("")].copy()
+    r["Rehearsal"] = pd.to_numeric(r["Rehearsal"], errors="coerce").astype("Int64")
+    r = r[r["Rehearsal"].notna()].copy()
+    
+    # Filter out rehearsals where "Include in allocation" is not "Y"
+    if "Include in allocation" in r.columns:
+        print(f"[ALLOCATOR] Before filtering: {len(r)} rehearsals")
+        r = r[r["Include in allocation"].apply(parse_truthy)].copy()
+        print(f"[ALLOCATOR] After filtering: {len(r)} rehearsals")
+    
     r["Date"] = pd.to_datetime(r.get("Date"), errors="coerce").dt.date  # type: ignore
 
     start_min = r.get("Start Time").apply(minutes_from_timecell) if "Start Time" in r.columns else pd.Series([None]*len(r))  # type: ignore
@@ -722,12 +1237,22 @@ def prepare_rehearsals_for_allocator(rehearsals_df: pd.DataFrame) -> pd.DataFram
     date_str = np.where(pd.notna(pd.Series(r["Date"])), pd.Series(r["Date"]).astype(str), "2000-01-01")
     r["Start DateTime"] = pd.to_datetime(date_str + " " + hhmm, errors="coerce").fillna(pd.to_datetime("2000-01-01 19:00"))
 
+    # Preserve Section column if it exists, otherwise default to "Full Ensemble"
+    if "Section" not in r.columns:
+        r["Section"] = "Full Ensemble"
+    else:
+        r["Section"] = r["Section"].fillna("Full Ensemble").astype(str)
+        r.loc[r["Section"].str.strip() == "", "Section"] = "Full Ensemble"
+
     return r.sort_values("Rehearsal").reset_index(drop=True)
-
-
 def run_allocation_compute(works_df: pd.DataFrame, rehearsals_df: pd.DataFrame, G: int) -> Tuple[pd.DataFrame, List[str]]:
     works = prepare_works_for_allocator(works_df)
     rehe = prepare_rehearsals_for_allocator(rehearsals_df)
+    
+    print(f"[ALLOCATION] Works count: {len(works)}, Rehearsals count: {len(rehe)}")
+    if len(rehe) > 0:
+        print(f"[ALLOCATION] Rehearsal numbers: {rehe['Rehearsal'].unique().tolist()}")
+        print(f"[ALLOCATION] First rehearsal: {rehe.iloc[0].to_dict() if len(rehe) > 0 else 'N/A'}")
 
     if works.empty or rehe.empty:
         raise ValueError("Need at least 1 work and 1 rehearsal.")
@@ -940,24 +1465,43 @@ def choose_break_offset_favor_longer_first_half(durations: List[int]) -> int:
 
 
 def compute_timed_df(schedule_df: pd.DataFrame, rehearsals_prepared: pd.DataFrame) -> pd.DataFrame:
-    if schedule_df.empty:
+    if schedule_df.empty and rehearsals_prepared.empty:
         return pd.DataFrame()
 
     rehe = rehearsals_prepared.set_index("Rehearsal", drop=False)
     out_rows = []
+    processed_rehearsals = set()
 
+    # Process rehearsals that have allocated works
     for rnum, df_r in schedule_df.groupby("Rehearsal", sort=True):
         rnum_i = int(rnum)  # type: ignore
+        processed_rehearsals.add(rnum_i)
+        
         if rnum_i not in rehe.index:
             continue
 
         rrow = rehe.loc[rnum_i]
+        
+        # Get Event Type from the rehearsal row
+        event_type = str(rrow.get("Event Type", "Rehearsal")).strip() if pd.notna(rrow.get("Event Type")) else "Rehearsal"
+        if not event_type:
+            event_type = "Rehearsal"
+        
+        # Skip adding scheduled works to concerts - concerts only get placeholder rows
+        if event_type == "Concert":
+            continue
+        
         date = rrow.get("Date")
         start_dt = pd.to_datetime(rrow.get("Start DateTime"), errors="coerce")  # type: ignore
         if pd.isna(start_dt):
             start_dt = pd.to_datetime("2000-01-01 19:00")
 
         break_mins = safe_int(rrow.get("Break (minutes)", 0), 0)
+        
+        # Get Section from the rehearsal row
+        section = str(rrow.get("Section", "Full Ensemble")).strip() if pd.notna(rrow.get("Section")) else "Full Ensemble"
+        if not section:
+            section = "Full Ensemble"
 
         durs = [safe_int(x, 0) for x in df_r["Rehearsal Time (minutes)"].tolist()]
         durs = [d for d in durs if d > 0]
@@ -983,6 +1527,8 @@ def compute_timed_df(schedule_df: pd.DataFrame, rehearsals_prepared: pd.DataFram
                     "Time in Rehearsal": br_start.strftime("%H:%M"),
                     "Break Start (HH:MM)": br_start.strftime("%H:%M"),
                     "Break End (HH:MM)": br_end.strftime("%H:%M"),
+                    "Section": section,
+                    "Event Type": event_type,
                 })
                 elapsed += break_mins
 
@@ -994,11 +1540,84 @@ def compute_timed_df(schedule_df: pd.DataFrame, rehearsals_prepared: pd.DataFram
                 "Time in Rehearsal": it_start.strftime("%H:%M"),
                 "Break Start (HH:MM)": "",
                 "Break End (HH:MM)": "",
+                "Section": section,
+                "Event Type": event_type,
             })
             elapsed += mins
 
+    # Add placeholder rows for rehearsals without allocated works (e.g., sectionals)
+    print(f"[TIMED] Processed rehearsals: {processed_rehearsals}")
+    print(f"[TIMED] All rehearsals in prepared data: {rehearsals_prepared['Rehearsal'].unique().tolist()}")
+    
+    for _, rrow in rehearsals_prepared.iterrows():
+        rnum_i = safe_int(rrow.get("Rehearsal"), None)
+        if rnum_i is None or rnum_i in processed_rehearsals:
+            continue
+        
+        print(f"[TIMED] Adding placeholder for rehearsal {rnum_i}")
+        
+        date = rrow.get("Date")
+        print(f"[TIMED]   Date from rrow: {repr(date)} (type: {type(date).__name__})")
+        
+        # Ensure date is in a format that pd.to_datetime can handle later
+        # Handle NaT explicitly
+        if pd.isna(date):
+            print(f"[TIMED]   Date is NaT/NaN - using placeholder date")
+            date_for_placeholder = "2000-01-01"  # Fallback date
+        elif isinstance(date, str):
+            # Keep string as-is (e.g., "2026-02-15")
+            date_for_placeholder = date
+        elif hasattr(date, 'strftime'):
+            # Convert date/datetime objects to ISO string
+            date_for_placeholder = date.strftime("%Y-%m-%d")
+        else:
+            date_for_placeholder = str(date)
+        
+        print(f"[TIMED]   Date for placeholder: {repr(date_for_placeholder)} (type: {type(date_for_placeholder).__name__})")
+        
+        start_dt = pd.to_datetime(rrow.get("Start DateTime"), errors="coerce")
+        if pd.isna(start_dt):
+            # Use the actual date from rehearsal and default time
+            start_time_str = rrow.get("Start Time", "14:00")
+            if pd.notna(start_time_str) and start_time_str:
+                start_dt = pd.to_datetime(f"{date_for_placeholder} {start_time_str}", errors="coerce")
+            if pd.isna(start_dt):
+                start_dt = pd.to_datetime(f"{date_for_placeholder} 14:00")
+        
+        section = str(rrow.get("Section", "Full Ensemble")).strip() if pd.notna(rrow.get("Section")) else "Full Ensemble"
+        if not section:
+            section = "Full Ensemble"
+        
+        event_type = str(rrow.get("Event Type", "Rehearsal")).strip() if pd.notna(rrow.get("Event Type")) else "Rehearsal"
+        if not event_type:
+            event_type = "Rehearsal"
+        
+        # Determine display title based on event type
+        if event_type == "Concert":
+            display_title = "Concert"
+        elif event_type == "Sectional":
+            display_title = "Sectional Rehearsal"
+        else:
+            display_title = "Rehearsal"
+        
+        # Add a placeholder row for this rehearsal/concert/sectional
+        # For concerts, this creates a visible column in the timeline editor
+        out_rows.append({
+            "Rehearsal": rnum_i,
+            "Date": date_for_placeholder,  # Use normalized date
+            "Title": display_title,
+            "Time in Rehearsal": start_dt.strftime("%H:%M"),
+            "Break Start (HH:MM)": "",
+            "Break End (HH:MM)": "",
+            "Section": section,
+            "Event Type": event_type,
+        })
+
     out = pd.DataFrame(out_rows)
+    print(f"[TIMED] Before date conversion, sample dates: {[r.get('Date') for r in out_rows[:3]]}")
     out["Date"] = pd.to_datetime(out["Date"], errors="coerce")
+    print(f"[TIMED] After date conversion, sample dates: {out['Date'].head(3).tolist()}")
+    print(f"[TIMED] NaT count in Date column: {out['Date'].isna().sum()}")
     out["Rehearsal"] = pd.to_numeric(out["Rehearsal"], errors="coerce").astype("Int64")
     return out
 
@@ -1038,6 +1657,69 @@ def api_schedule_state(schedule_id):
     if r: return r
     s = load_schedule(schedule_id)
     if not s: abort(404)
+    
+    # Debug: Log that Event Type is being passed through
+    rehearsals = s.get("rehearsals", [])
+    if rehearsals and len(rehearsals) > 0:
+        first_reh = rehearsals[0]
+        has_event_type = "Event Type" in first_reh
+        print(f"[API STATE] Returning {len(rehearsals)} rehearsals, Event Type present: {has_event_type}, first reh: {list(first_reh.keys())[:5]}...")
+    
+    # Get timed data and add concert_id links (same as /data endpoint)
+    timed_data = s.get("timed", [])
+    print(f"\n[API STATE] Schedule: {schedule_id}")
+    print(f"[API STATE] Timed data rows: {len(timed_data)}")
+    print(f"[API STATE] Rehearsals: {len(rehearsals)}")
+    
+    # Add concert_id to timed rows for concert rehearsals
+    ensembles = load_ensembles()
+    print(f"[API STATE] Loaded {len(ensembles)} ensembles")
+    ensemble = next((e for e in ensembles if e["id"] == s.get("ensemble_id")), None)
+    print(f"[API STATE] Looking for ensemble_id: {s.get('ensemble_id')}")
+    print(f"[API STATE] Found ensemble: {ensemble['name'] if ensemble else 'None'}")
+    
+    schedule_concerts = []  # Initialize outside if block
+    if ensemble:
+        concerts = ensemble.get("concerts", [])
+        print(f"[API STATE] Total concerts in ensemble: {len(concerts)}")
+        print(f"[API STATE] All concerts: {[{'id': c.get('id'), 'title': c.get('title'), 'schedule_id': c.get('schedule_id')} for c in concerts]}")
+        schedule_concerts = [c for c in concerts if c.get("schedule_id") == schedule_id]
+        print(f"[API STATE] Concerts for schedule {schedule_id}: {len(schedule_concerts)}")
+        for c in schedule_concerts:
+            print(f"  - {c.get('id')}: {c.get('title')} on {c.get('date')}")
+        # Link concerts into rehearsals by concert_id or by date as a fallback
+        if rehearsals:
+            for reh in rehearsals:
+                if reh.get("Event Type") == "Concert":
+                    # If rehearsal already has concert_id, ensure it exists; otherwise, try to find by date
+                    cid = reh.get("concert_id")
+                    concert = None
+                    if cid:
+                        concert = next((c for c in schedule_concerts if c.get("id") == cid), None)
+                    if not concert:
+                        reh_date_norm = str(reh.get("Date", ""))[:10]
+                        concert = next((c for c in schedule_concerts if str(c.get("date", ""))[:10] == reh_date_norm), None)
+                        if concert:
+                            reh["concert_id"] = concert.get("id")
+                    # If we found a concert, push master fields into rehearsal for display consistency
+                    if concert:
+                        reh["Date"] = concert.get("date", reh.get("Date"))
+                        reh["Start Time"] = concert.get("time", reh.get("Start Time"))
+                        reh["Venue"] = concert.get("venue", reh.get("Venue", ""))
+                        reh["Uniform"] = concert.get("uniform", reh.get("Uniform", ""))
+                    else:
+                        print(f"[API STATE] Concert rehearsal without linked concert: Rehearsal {reh.get('Rehearsal')} Date {reh.get('Date')}")
+
+            # Also propagate concert_id into timed rows
+            for timed_row in timed_data:
+                reh_num = timed_row.get("Rehearsal")
+                if reh_num:
+                    reh = next((r for r in rehearsals if int(r.get("Rehearsal", 0)) == reh_num), None)
+                    if reh and reh.get("Event Type") == "Concert":
+                        cid = reh.get("concert_id")
+                        if cid:
+                            timed_row["concert_id"] = cid
+    
     return jsonify({
         "works_cols": s.get("works_cols", []),
         "rehearsals_cols": s.get("rehearsals_cols", []),
@@ -1045,8 +1727,126 @@ def api_schedule_state(schedule_id):
         "rehearsals": s.get("rehearsals", []),
         "allocation": s.get("allocation", []),
         "schedule": s.get("schedule", []),
-        "timed": s.get("timed", []),
+        "timed": timed_data,
+        "concerts": schedule_concerts,  # Always use schedule_concerts (initialized above)
+        "ensemble_id": s.get("ensemble_id"),
     })
+
+@app.get("/api/s/<schedule_id>/data")
+def api_schedule_data(schedule_id):
+    """Get current schedule data (timed, rehearsals, schedule, allocation)."""
+    r = admin_required_or_403()
+    if r: return r
+    
+    s = load_schedule(schedule_id)
+    if not s: abort(404)
+    
+    # Clean the timed data before returning
+    timed_data = clean_timed_data(s.get("timed", []))
+    
+    # Add concert_id to timed rows for concert rehearsals
+    rehearsals_list = s.get("rehearsals", [])
+    ensembles = load_ensembles()
+    ensemble = next((e for e in ensembles if e["id"] == s.get("ensemble_id")), None)
+    
+    schedule_concerts = []
+    if ensemble and rehearsals_list:
+        # Build a map of rehearsal date -> concert
+        concerts = ensemble.get("concerts", [])
+        schedule_concerts = [c for c in concerts if c.get("schedule_id") == schedule_id]
+        
+        for timed_row in timed_data:
+            reh_num = timed_row.get("Rehearsal")
+            if reh_num:
+                # Find rehearsal by number
+                reh = next((r for r in rehearsals_list if int(r.get("Rehearsal", 0)) == reh_num), None)
+                if reh and reh.get("Event Type") == "Concert":
+                    # Find the concert for this rehearsal by matching date
+                    reh_date = reh.get("Date")
+                    # Normalize dates for comparison (strip time component)
+                    reh_date_normalized = str(reh_date)[:10] if reh_date else None
+                    
+                    # Try to match concert by date (comparing just YYYY-MM-DD)
+                    concert = None
+                    for c in concerts:
+                        concert_date_normalized = str(c.get("date", ""))[:10]
+                        if concert_date_normalized == reh_date_normalized and c.get("schedule_id") == schedule_id:
+                            concert = c
+                            break
+                    
+                    if concert:
+                        timed_row["concert_id"] = concert.get("id")
+    
+    return jsonify({
+        "timed": timed_data,
+        "rehearsals": s.get("rehearsals", []),
+        "schedule": s.get("schedule", []),
+        "allocation": s.get("allocation", []),
+        "concerts": schedule_concerts,  # Add concerts for editor
+    })
+
+
+@app.get("/api/s/<schedule_id>/concerts")
+def api_schedule_concerts(schedule_id):
+    """Get concerts linked to this schedule."""
+    r = admin_required_or_403()
+    if r: return r
+    
+    s = load_schedule(schedule_id)
+    if not s: abort(404)
+    
+    # Get linked concerts from the ensemble
+    ensembles = load_ensembles()
+    ensemble = next((e for e in ensembles if e["id"] == s.get("ensemble_id")), None)
+    
+    if not ensemble:
+        return jsonify({"concerts": []})
+    
+    # Get rehearsal dates from this schedule for matching
+    s = load_schedule(schedule_id)
+    rehearsal_dates = set()
+    if s:
+        for reh in s.get("rehearsals", []):
+            if reh.get("Date"):
+                try:
+                    dt = pd.to_datetime(reh.get("Date"))
+                    rehearsal_dates.add(dt.strftime("%Y-%m-%d 00:00:00"))
+                except:
+                    pass
+    
+    # Include concerts that match this schedule_id OR have dates matching rehearsals in this schedule
+    all_concerts = ensemble.get("concerts", [])
+    linked_concerts = []
+    for c in all_concerts:
+        if c.get("status") == "scheduled":
+            concert_date_str = c.get("date", "")
+            if c.get("schedule_id") == schedule_id or concert_date_str in rehearsal_dates:
+                linked_concerts.append(c)
+    
+    return jsonify({"concerts": linked_concerts})
+
+
+@app.put("/api/s/<schedule_id>/concert/<concert_id>")
+def api_update_schedule_concert(schedule_id, concert_id):
+    """Update a concert linked to this schedule."""
+    r = admin_required_or_403()
+    if r: return r
+    
+    s = load_schedule(schedule_id)
+    if not s: abort(404)
+    
+    data = request.get_json() or {}
+    ensemble_id = s.get("ensemble_id")
+    
+    # Update the concert
+    concert = update_concert(ensemble_id, concert_id, data)
+    if not concert:
+        return jsonify({"ok": False, "error": "Concert not found"}), 404
+
+    # Ensure response JSON has no NaN/inf values that would break JSON.parse in the client
+    concert_clean = {k: _json_safe(v) for k, v in concert.items()}
+    return jsonify({"ok": True, "concert": concert_clean})
+
 
 @app.post("/api/s/<schedule_id>/save_inputs")
 def api_schedule_save_inputs(schedule_id):
@@ -1076,6 +1876,34 @@ def api_schedule_save_inputs(schedule_id):
         s["allocation"] = []
         s["schedule"] = []
         s["timed"] = []
+    
+    # Sync concert dates: update ensemble.concerts when concert rehearsal dates change
+    ensembles = load_ensembles()
+    ensemble = next((e for e in ensembles if e["id"] == s.get("ensemble_id")), None)
+    if ensemble and "concerts" in ensemble:
+        for reh in rehearsals:
+            event_type = reh.get("Event Type", "")
+            if event_type == "Concert":
+                reh_date = reh.get("Date", "")
+                concert_id = reh.get("concert_id")
+                
+                # Normalize the date
+                if reh_date:
+                    try:
+                        dt = pd.to_datetime(reh_date)
+                        normalized_date = dt.strftime("%Y-%m-%d 00:00:00")
+                    except:
+                        normalized_date = str(reh_date)
+                    
+                    # Find and update the concert
+                    if concert_id:
+                        concert = next((c for c in ensemble["concerts"] if c.get("id") == concert_id), None)
+                        if concert:
+                            print(f"[SAVE INPUTS] Updating concert {concert_id} date from {concert.get('date')} to {normalized_date}")
+                            concert["date"] = normalized_date
+        
+        save_ensembles(ensembles)
+    
     s["updated_at"] = int(time.time())
     save_schedule(s)
     return jsonify({"ok": True})
@@ -1091,17 +1919,32 @@ def api_schedule_run_allocation(schedule_id):
 
     works, rehearsals, _, _ = get_frames(s)
     G = int(s.get("G", DEFAULT_G))
+    
+    # Filter to only include rehearsals where Event Type is "Rehearsal"
+    # This excludes Sectionals and Concerts from allocation
+    print(f"[ALLOCATION] Pre-filter rehearsals: {len(rehearsals)} rows")
+    rehearsals_for_allocation = rehearsals[rehearsals['Event Type'].str.lower() == 'rehearsal'].copy()
+    print(f"[ALLOCATION] Post-filter rehearsals (Event Type='Rehearsal' only): {len(rehearsals_for_allocation)} rows")
+    if len(rehearsals_for_allocation) < 2:
+        return jsonify({
+            "ok": False, 
+            "error": f"Need at least 2 'Rehearsal' type events for allocation. Found {len(rehearsals_for_allocation)} rehearsals (Sectionals and Concerts are excluded from allocation)."
+        }), 400
 
     try:
-        alloc_df, warnings = run_allocation_compute(works, rehearsals, G)
+        alloc_df, warnings = run_allocation_compute(works, rehearsals_for_allocation, G)
         s["allocation"] = sanitize_df_records(alloc_df.to_dict(orient="records"))
         s["warnings"] = warnings
         s["updated_at"] = int(time.time())
         save_schedule(s)
         return jsonify({"ok": True, "warnings": warnings})
     except ValueError as e:
+        print(f"[ALLOCATION] ValueError: {str(e)}")
         return jsonify({"ok": False, "error": str(e)}), 400
     except Exception as e:
+        import traceback
+        error_detail = traceback.format_exc()
+        print(f"[ALLOCATION] Exception: {str(e)}\n{error_detail}")
         return jsonify({"ok": False, "error": f"Allocation computation failed: {str(e)}"}), 500
 
 
@@ -1120,7 +1963,8 @@ def api_schedule_generate(schedule_id):
     sched = build_schedule_from_allocation(works, alloc)
     s["schedule"] = sanitize_df_records(sched.to_dict(orient="records"))
 
-    rehe_prep = prepare_rehearsals_for_allocator(rehearsals)
+    # Use prepare_all_rehearsals to include non-allocated rehearsals (sectionals)
+    rehe_prep = prepare_all_rehearsals(rehearsals)
     timed = compute_timed_df(sched, rehe_prep)
     s["timed"] = sanitize_df_records(timed.to_dict(orient="records"))
     s["generated_at"] = pd.Timestamp.utcnow().isoformat() + "Z"
@@ -1156,7 +2000,16 @@ def api_schedule_import_csv(schedule_id):
         cols = list(default_rehearsals_df().columns)
         df = df.reindex(columns=[c for c in df.columns if c in cols])
         df = df.reindex(columns=cols, fill_value="")
-        s["rehearsals"] = df.fillna("").to_dict(orient="records")
+        rehearsals_data = df.fillna("").to_dict(orient="records")
+        # Auto-number rehearsals if missing or empty
+        rehearsals_data = auto_number_rehearsals(rehearsals_data)
+        # Ensure Include in allocation column is present
+        rehearsals_data = ensure_include_in_allocation_column(rehearsals_data)
+        # Ensure Section column is present
+        rehearsals_data = ensure_section_column(rehearsals_data)
+        # Ensure Event Type column is present
+        rehearsals_data = ensure_event_type_column(rehearsals_data)
+        s["rehearsals"] = rehearsals_data
 
     # importing should clear computed artifacts
     s["allocation"] = []
@@ -1207,7 +2060,8 @@ def api_timed_edit(schedule_id):
         if len(s["timed_history"]) > 50:
             s["timed_history"] = s["timed_history"][-50:]
 
-    # Update timed schedule
+    # Update timed schedule and clean up missing Section values
+    timed_updates = clean_timed_data(timed_updates)
     s["timed"] = timed_updates
     s["updated_at"] = int(time.time())
     
@@ -1267,8 +2121,13 @@ def api_timed_edit(schedule_id):
             rehearsal = int(row.get("Rehearsal", 0)) if row.get("Rehearsal") else 0
             # Use the duration column (could be "Rehearsal Time (minutes)" or "Time in Rehearsal")
             duration = row.get("Rehearsal Time (minutes)") or row.get("Time in Rehearsal") or 0
-            if duration:
-                duration = int(duration)
+            if duration and not pd.isna(duration):
+                try:
+                    duration = int(duration)
+                except (ValueError, TypeError):
+                    duration = 0
+            else:
+                duration = 0
             timed_map[(title, rehearsal)] = duration
         
         print(f"DEBUG: Built timed_map with {len(timed_map)} entries")
@@ -1372,6 +2231,298 @@ def api_timed_history(schedule_id):
     ])
 
 
+@app.put("/api/s/<schedule_id>/section/<int:rehearsal_num>")
+def api_update_section(schedule_id, rehearsal_num):
+    """Update the Section field for a specific rehearsal."""
+    r = admin_required_or_403()
+    if r: return r
+    
+    s = load_schedule(schedule_id)
+    if not s: abort(404)
+    
+    data = request.get_json() or {}
+    section = data.get("section", "Full Ensemble").strip()
+    
+    # Update all rows for this rehearsal with the new section
+    timed = s.get("timed", [])
+    for row in timed:
+        if int(row.get("Rehearsal", 0)) == rehearsal_num:
+            row["Section"] = section if section else "Full Ensemble"
+    
+    s["timed"] = timed
+    s["updated_at"] = int(time.time())
+    save_schedule(s)
+    
+    return jsonify({"ok": True, "section": section})
+
+
+@app.put("/api/s/<schedule_id>/rehearsal-event-type/<int:rehearsal_num>")
+def api_update_rehearsal_event_type(schedule_id, rehearsal_num):
+    """Update Event Type and Section for a specific rehearsal."""
+    r = admin_required_or_403()
+    if r: return r
+    
+    s = load_schedule(schedule_id)
+    if not s: abort(404)
+    
+    data = request.get_json() or {}
+    event_type = data.get("Event Type", "Rehearsal").strip()
+    section = data.get("Section", "Full Ensemble").strip()
+    
+    # Update rehearsals table
+    rehearsals = s.get("rehearsals", [])
+    for row in rehearsals:
+        if int(row.get("Rehearsal", 0)) == rehearsal_num:
+            row["Event Type"] = event_type if event_type else "Rehearsal"
+            row["Section"] = section if section else "Full Ensemble"
+    
+    # Update timed data
+    timed = s.get("timed", [])
+    for row in timed:
+        if int(row.get("Rehearsal", 0)) == rehearsal_num:
+            row["Section"] = section if section else "Full Ensemble"
+    
+    s["rehearsals"] = rehearsals
+    s["timed"] = timed
+    s["updated_at"] = int(time.time())
+    save_schedule(s)
+    
+    return jsonify({"ok": True, "event_type": event_type, "section": section})
+
+
+@app.put("/api/s/<schedule_id>/rehearsal/<int:rehearsal_num>")
+def api_update_rehearsal(schedule_id, rehearsal_num):
+    """Update rehearsal details (date, time, event, include_in_allocation, section, venue, uniform, event_type) in rehearsals table."""
+    r = admin_required_or_403()
+    if r: return r
+    
+    s = load_schedule(schedule_id)
+    if not s: abort(404)
+    
+    data = request.get_json() or {}
+    print(f"[DEBUG] api_update_rehearsal called with data: {data}")
+    
+    # Update rehearsals table
+    rehearsals_data = s.get("rehearsals", [])
+    updated_row = None
+    for row in rehearsals_data:
+        if int(row.get("Rehearsal", 0)) == rehearsal_num:
+            print(f"[DEBUG] Found rehearsal {rehearsal_num}")
+            # Update the fields provided
+            if "date" in data:
+                row["Date"] = data["date"]
+            if "start_time" in data:
+                row["Start Time"] = data["start_time"]
+            if "end_time" in data:
+                row["End Time"] = data["end_time"]
+            if "event" in data:
+                row["Event"] = data["event"]
+            if "include_in_allocation" in data:
+                row["Include in allocation"] = data["include_in_allocation"]
+            if "section" in data:
+                row["Section"] = data["section"] if data["section"] else "Full Ensemble"
+            if "event_type" in data:
+                row["Event Type"] = data["event_type"]
+            if "venue" in data:
+                row["Venue"] = data["venue"]
+            if "uniform" in data:
+                row["Uniform"] = data["uniform"]
+            if "time" in data:
+                row["Time"] = data["time"]
+            updated_row = row
+            break
+    
+    s["rehearsals"] = rehearsals_data
+    
+    # Re-ensure Event Type column is set based on Event field if event_type wasn't explicitly provided
+    if "event_type" not in data:
+        s["rehearsals"] = ensure_event_type_column(s["rehearsals"])
+    
+    # If this is a Concert event type, sync with concert object
+    if updated_row and (updated_row.get("Event Type") == "Concert" or 
+                       (data.get("event_type") == "Concert") or
+                       (data.get("event") and str(data.get("event")).strip().lower() == "concert")):
+        ensembles = load_ensembles()
+        ensemble = next((e for e in ensembles if e["id"] == s.get("ensemble_id")), None)
+        if ensemble:
+            concert_date = updated_row.get("Date", "")
+            concert_time = updated_row.get("Start Time", "")
+            concert_venue = data.get("venue", updated_row.get("Venue", ""))
+            concert_uniform = data.get("uniform", updated_row.get("Uniform", ""))
+            concert_id = updated_row.get("concert_id")
+            
+            # Normalize date for concert storage
+            if concert_date:
+                try:
+                    dt = pd.to_datetime(concert_date)
+                    concert_date = dt.strftime("%Y-%m-%d 00:00:00")
+                    updated_row["Date"] = concert_date  # Update rehearsal row with normalized date
+                except:
+                    concert_date = str(concert_date)
+            
+            # Try to find existing concert by concert_id or date
+            concert = None
+            if concert_id:
+                concert = next((c for c in ensemble.get("concerts", []) if c.get("id") == concert_id), None)
+            
+            if not concert and concert_date:
+                # Try to find by schedule_id + old date (in case date is being changed)
+                concert = next((c for c in ensemble.get("concerts", []) 
+                               if c.get("schedule_id") == schedule_id and 
+                               c.get("date") != concert_date), None)
+            
+            if concert:
+                # Update existing concert
+                print(f"[UPDATE REHEARSAL] Updating existing concert {concert.get('id')}")
+                
+                # Regenerate title with new date
+                try:
+                    dt = pd.to_datetime(concert_date)
+                    day = dt.day
+                    if 10 <= day % 100 <= 20:
+                        suffix = 'th'
+                    else:
+                        suffix = {1: 'st', 2: 'nd', 3: 'rd'}.get(day % 10, 'th')
+                    formatted_date = dt.strftime(f'%A %B {day}{suffix}')
+                    concert["title"] = f"{ensemble.get('name', 'Unknown Ensemble')} - Concert - {formatted_date}"
+                except:
+                    pass
+                
+                concert["date"] = concert_date
+                concert["time"] = concert_time
+                if concert_venue:
+                    concert["venue"] = concert_venue
+                if concert_uniform:
+                    concert["uniform"] = concert_uniform
+                # Store concert_id in rehearsal row for easy linking
+                updated_row["concert_id"] = concert["id"]
+            else:
+                # Create new concert
+                print(f"[UPDATE REHEARSAL] Creating new concert for {concert_date}")
+                concert_id = f"concert_{uuid.uuid4().hex[:12]}"
+                
+                # Format date for title
+                try:
+                    dt = pd.to_datetime(concert_date)
+                    day = dt.day
+                    if 10 <= day % 100 <= 20:
+                        suffix = 'th'
+                    else:
+                        suffix = {1: 'st', 2: 'nd', 3: 'rd'}.get(day % 10, 'th')
+                    formatted_date = dt.strftime(f'%A %B {day}{suffix}')
+                except:
+                    formatted_date = str(concert_date)
+                
+                new_concert = {
+                    "id": concert_id,
+                    "title": f"{ensemble.get('name', 'Unknown Ensemble')} - Concert - {formatted_date}",
+                    "date": concert_date,
+                    "time": concert_time,
+                    "venue": concert_venue,
+                    "uniform": concert_uniform,
+                    "programme": "",
+                    "other_info": "",
+                    "status": "scheduled",
+                    "schedule_id": schedule_id,
+                    "is_auto_generated": True
+                }
+                if "concerts" not in ensemble:
+                    ensemble["concerts"] = []
+                ensemble["concerts"].append(new_concert)
+                updated_row["concert_id"] = concert_id
+                print(f"[UPDATE REHEARSAL] Created concert {concert_id}")
+            
+            save_ensembles(ensembles)
+    
+    # Track event type changes so we can adjust timed rows (e.g., strip works when converting to a concert)
+    event_type_changed = False
+    if "event_type" in data and updated_row:
+        old_event_type = None
+        # Find the old event type value
+        for row in s.get("rehearsals", []):
+            if int(row.get("Rehearsal", 0)) == rehearsal_num:
+                old_event_type = row.get("Event Type", "Rehearsal")
+                break
+        
+        new_event_type = data["event_type"]
+        if old_event_type != new_event_type:
+            event_type_changed = True
+            print(f"[UPDATE REHEARSAL] Event type changed from {old_event_type} to {new_event_type}, updating timed rows")
+    
+    # Update timed schedule - sync dates and section from rehearsals table
+    timed_data = s.get("timed", [])
+
+    new_event_type = updated_row.get("Event Type", "Rehearsal") if updated_row else "Rehearsal"
+    section_value = updated_row.get("Section") if updated_row else None
+    section_value = section_value if section_value else "Full Ensemble"
+
+    start_time_value = data.get("start_time") or data.get("time")
+    if not start_time_value and updated_row:
+        start_time_value = updated_row.get("Start Time") or updated_row.get("Time")
+    updated_existing_row = False
+
+    if event_type_changed and new_event_type == "Concert":
+        # Converting to a concert: drop prior timed rows for this rehearsal and add a concert placeholder
+        timed_data = [row for row in timed_data if int(row.get("Rehearsal", 0)) != rehearsal_num]
+        timed_data = upsert_concert_timed_rows(
+            timed_data,
+            rehearsal_num,
+            {
+                "id": updated_row.get("concert_id") if updated_row else None,
+                "date": updated_row.get("Date") if updated_row else data.get("date"),
+                "time": start_time_value,
+                "title": (updated_row.get("Event") if updated_row else None) or "Concert",
+            },
+            section_value,
+        )
+    else:
+        # Update existing timed rows in place
+        for row in timed_data:
+            if int(row.get("Rehearsal", 0)) == rehearsal_num:
+                if "date" in data:
+                    row["Date"] = data["date"]
+                if "section" in data:
+                    row["Section"] = section_value
+                if event_type_changed:
+                    row["Event Type"] = new_event_type
+                    if new_event_type != "Concert":
+                        row.pop("concert_id", None)
+                if new_event_type == "Concert":
+                    row["Event Type"] = "Concert"
+                    if updated_row and updated_row.get("concert_id"):
+                        row["concert_id"] = updated_row.get("concert_id")
+                    if start_time_value:
+                        row["Time in Rehearsal"] = start_time_value
+                else:
+                    # If event label was edited, normalize and propagate
+                    if "event" in data and data["event"]:
+                        event_val = str(data["event"]).strip().lower()
+                        if event_val in ["concert", "sectional", "rehearsal"]:
+                            row["Event Type"] = event_val.capitalize()
+                updated_existing_row = True
+
+        # If no timed rows existed for this concert, add a placeholder so it shows immediately
+        if new_event_type == "Concert" and not updated_existing_row:
+            timed_data = upsert_concert_timed_rows(
+                timed_data,
+                rehearsal_num,
+                {
+                    "id": updated_row.get("concert_id") if updated_row else None,
+                    "date": updated_row.get("Date") if updated_row else data.get("date"),
+                    "time": start_time_value,
+                    "title": (updated_row.get("Event") if updated_row else None) or "Concert",
+                },
+                section_value,
+            )
+
+    s["timed"] = clean_timed_data(timed_data)
+    
+    s["updated_at"] = int(time.time())
+    save_schedule(s)
+    
+    return jsonify({"ok": True, "rehearsal": rehearsal_num, "updated": data})
+
+
 @app.get("/s/<schedule_id>")
 def schedule_view(schedule_id):
     s = load_schedule(schedule_id)
@@ -1388,14 +2539,176 @@ def schedule_view(schedule_id):
         r = ensemble_member_required_or_403(s["ensemble_id"])
         if r: return r
 
-    # Get ensemble name
+    # Get ensemble name and concerts
     ensembles = load_ensembles()
     ensemble = next((e for e in ensembles if e["id"] == s.get("ensemble_id")), None)
     ensemble_name = ensemble["name"] if ensemble else s.get("ensemble_id", "Schedule")
+    
+    # Get all concerts for this ensemble (filter by schedule_id if set, but also include concerts without schedule_id)
+    linked_concerts = []
+    if ensemble:
+        # Get all concerts that either match this schedule_id OR have no schedule_id but match dates in this schedule
+        all_concerts = ensemble.get("concerts", [])
+        
+        # Get rehearsal dates from this schedule for matching
+        rehearsal_dates = set()
+        rehearsal_dates_norm = set()
+        for reh in s.get("rehearsals", []):
+            if reh.get("Date"):
+                try:
+                    dt = pd.to_datetime(reh.get("Date"))
+                    rehearsal_dates.add(dt.strftime("%Y-%m-%d 00:00:00"))
+                    rehearsal_dates_norm.add(dt.strftime("%Y-%m-%d"))
+                except:
+                    pass
+        
+        for c in all_concerts:
+            # Include if: linked to this schedule OR concert date matches a rehearsal in this schedule
+            if c.get("status") == "scheduled":
+                concert_date_str = c.get("date", "")
+                concert_date_norm = str(concert_date_str)[:10]
+                if (
+                    c.get("schedule_id") == schedule_id
+                    or concert_date_str in rehearsal_dates
+                    or concert_date_norm in rehearsal_dates_norm
+                ):
+                    linked_concerts.append(c)
+        
+        # Sort by date
+        concerts_with_dates = []
+        for c in linked_concerts:
+            try:
+                concert_date = pd.to_datetime(c.get("date", "")).date() if c.get("date") else None
+                concerts_with_dates.append((concert_date, c))
+            except:
+                concerts_with_dates.append((None, c))
+        concerts_with_dates.sort(key=lambda x: x[0] if x[0] else "")
+        linked_concerts = [c for _, c in concerts_with_dates]
 
-    timed = pd.DataFrame(s.get("timed", []))
-    response = render_template("view.html", timed=timed.to_dict(orient="records"), has_schedule=not timed.empty, 
-                               ensemble_name=ensemble_name, schedule_id=schedule_id, user=u)
+    # Get timed data and clean it to ensure sections are populated
+    timed_data = clean_timed_data(s.get("timed", []))
+    
+    # Add Event Type from rehearsals table to timed data
+    rehearsals = s.get("rehearsals", [])
+    event_type_map = {}
+    for reh_row in rehearsals:
+        reh_num = reh_row.get("Rehearsal")
+        if reh_num is not None:
+            event_type_map[int(reh_num)] = reh_row.get("Event Type", "Rehearsal")
+    
+    for row in timed_data:
+        reh_num = int(row.get("Rehearsal", 0))
+        row["Event Type"] = event_type_map.get(reh_num, "Rehearsal")
+
+    # Repair concert timed rows to use the concert's real date/time/title instead of placeholders
+    concert_map = {c.get("id"): c for c in linked_concerts if c.get("id")}
+    for row in timed_data:
+        if row.get("Event Type") != "Concert":
+            continue
+        cid = row.get("concert_id")
+        concert = concert_map.get(cid)
+        if not concert:
+            continue
+        date_val = row.get("Date")
+        # Treat 2000-01-01 placeholder or missing/empty as stale
+        if not date_val or str(date_val).startswith("2000-01-01"):
+            row["Date"] = concert.get("date", date_val)
+        time_val = row.get("Time in Rehearsal")
+        if (not time_val or time_val == "13:00:00") and concert.get("time"):
+            row["Time in Rehearsal"] = concert.get("time")
+        title_val = row.get("Title")
+        if not title_val or title_val == "Concert":
+            row["Title"] = concert.get("title", title_val)
+
+    # Fallback: ensure every linked concert shows in the schedule view
+    # If a concert has no timed rows (e.g., date change without regenerate), add a placeholder timed row
+    concert_timed_reh_nums = {int(r.get("Rehearsal", 0)) for r in timed_data if r.get("Event Type") == "Concert"}
+    concert_ids_in_timed = {r.get("concert_id") for r in timed_data if r.get("Event Type") == "Concert" and r.get("concert_id")}
+
+    for idx, concert in enumerate(linked_concerts):
+        if concert.get("id") in concert_ids_in_timed:
+            continue
+
+        # Try to find a matching concert rehearsal by concert_id or date
+        match_reh = None
+        for reh in rehearsals:
+            if reh.get("Event Type") != "Concert":
+                continue
+            if reh.get("concert_id") and reh.get("concert_id") == concert.get("id"):
+                match_reh = reh
+                break
+            # fallback match by date
+            reh_date_norm = str(reh.get("Date", ""))[:10]
+            if reh_date_norm and reh_date_norm == str(concert.get("date", ""))[:10]:
+                match_reh = reh
+                break
+
+        if match_reh:
+            reh_num = int(match_reh.get("Rehearsal", 0) or 0)
+        else:
+            # create a virtual rehearsal number far from real ones to avoid collision
+            reh_num = 900000 + idx
+
+        if reh_num in concert_timed_reh_nums:
+            continue
+
+        timed_data.append({
+            "Rehearsal": reh_num,
+            "Date": concert.get("date", ""),
+            "Title": concert.get("title", "Concert"),
+            "Time in Rehearsal": concert.get("time", "19:00"),
+            "Break Start (HH:MM)": "",
+            "Break End (HH:MM)": "",
+            "Section": "Full Ensemble",
+            "Event Type": "Concert",
+            "concert_id": concert.get("id")
+        })
+        concert_timed_reh_nums.add(reh_num)
+
+    
+    # Debug logging
+    print(f"\n[SCHEDULE VIEW] Schedule: {schedule_id}")
+    print(f"[SCHEDULE VIEW] Linked concerts: {len(linked_concerts)}")
+    for c in linked_concerts:
+        print(f"  - {c.get('title')} on {c.get('date')}")
+    print(f"[SCHEDULE VIEW] Timed data rows: {len(timed_data)}")
+    concert_rows = [r for r in timed_data if r.get('Event Type') == 'Concert']
+    print(f"[SCHEDULE VIEW] Concert event type rows: {len(concert_rows)}")
+    for cr in concert_rows:
+        print(f"  - Rehearsal {cr.get('Rehearsal')}, Date: {cr.get('Date')}")
+    
+    # Build rehearsal grouping and a chronological order for rendering
+    by_reh = {}
+    for row in timed_data:
+        rnum = row.get("Rehearsal")
+        if rnum is None:
+            continue
+        by_reh.setdefault(rnum, []).append(row)
+
+    def reh_sort_key(item):
+        rnum, rows = item
+        date_val = None
+        if rows:
+            date_val = rows[0].get("Date")
+        try:
+            dt = pd.to_datetime(date_val) if date_val is not None else None
+        except Exception:
+            dt = None
+        return (dt if dt is not None else pd.Timestamp.max, int(rnum))
+
+    reh_order = sorted(by_reh.items(), key=reh_sort_key)
+
+    timed = pd.DataFrame(timed_data)
+    response = render_template(
+        "view.html",
+        timed=timed.to_dict(orient="records"),
+        has_schedule=not timed.empty,
+        ensemble_name=ensemble_name,
+        schedule_id=schedule_id,
+        user=u,
+        concerts=linked_concerts,
+        reh_order=reh_order,
+    )
     # Prevent caching so members see fresh data
     return response, 200, {"Cache-Control": "no-cache, no-store, must-revalidate", "Pragma": "no-cache", "Expires": "0"}
 
@@ -1591,6 +2904,154 @@ def admin_membership_remove():
     return redirect(url_for("admin_home"))
 
 
+# ----------------------------
+# Concert Management Routes (Admin)
+# ----------------------------
+
+@app.get("/admin/ensembles/<ensemble_id>/concerts")
+def admin_view_concerts(ensemble_id):
+    """View all concerts for an ensemble."""
+    r = admin_required_or_403()
+    if r: return r
+
+    ensemble = get_ensemble_by_id(ensemble_id)
+    if not ensemble:
+        abort(404)
+
+    concerts = get_ensemble_concerts(ensemble_id)
+    schedules = [
+        {"id": s.get("id"), "name": s.get("name", "Untitled")}
+        for s in [load_schedule(sid) for sid in list_schedule_ids()]
+        if s and s.get("ensemble_id") == ensemble_id
+    ]
+
+    return render_template("concerts.html", ensemble=ensemble, concerts=concerts, schedules=schedules)
+
+
+@app.get("/admin/ensembles/<ensemble_id>/concerts/add")
+def admin_add_concert_form(ensemble_id):
+    """Show form to add a new concert."""
+    r = admin_required_or_403()
+    if r: return r
+
+    ensemble = get_ensemble_by_id(ensemble_id)
+    if not ensemble:
+        abort(404)
+
+    schedules = [
+        {"id": s.get("id"), "name": s.get("name", "Untitled")}
+        for s in [load_schedule(sid) for sid in list_schedule_ids()]
+        if s and s.get("ensemble_id") == ensemble_id
+    ]
+
+    return render_template("concert_form.html", ensemble=ensemble, concert=None, schedules=schedules)
+
+
+@app.post("/admin/ensembles/<ensemble_id>/concerts/add")
+def admin_add_concert(ensemble_id):
+    """Create a new concert."""
+    r = admin_required_or_403()
+    if r: return r
+
+    ensemble = get_ensemble_by_id(ensemble_id)
+    if not ensemble:
+        abort(404)
+
+    concert_data = {
+        "date": request.form.get("date"),
+        "time": request.form.get("time"),
+        "venue": request.form.get("venue"),
+        "uniform": request.form.get("uniform"),
+        "programme": request.form.get("programme"),
+        "other_info": request.form.get("other_info"),
+        "schedule_id": request.form.get("schedule_id") or None,
+        "status": request.form.get("status", "scheduled"),
+    }
+
+    try:
+        add_concert_to_ensemble(ensemble_id, concert_data)
+        return redirect(url_for("admin_view_concerts", ensemble_id=ensemble_id))
+    except Exception as e:
+        abort(400)
+
+
+@app.get("/admin/ensembles/<ensemble_id>/concerts/<concert_id>/edit")
+def admin_edit_concert_form(ensemble_id, concert_id):
+    """Show form to edit a concert."""
+    r = admin_required_or_403()
+    if r: return r
+
+    ensemble = get_ensemble_by_id(ensemble_id)
+    if not ensemble:
+        abort(404)
+
+    concert = next((c for c in ensemble.get("concerts", []) if c.get("id") == concert_id), None)
+    if not concert:
+        abort(404)
+
+    # Normalize date/time for HTML inputs
+    if concert.get("date"):
+        try:
+            dt = pd.to_datetime(concert["date"])
+            concert["date"] = dt.strftime("%Y-%m-%d")
+        except Exception:
+            concert["date"] = str(concert.get("date", ""))[:10]
+    if concert.get("time"):
+        try:
+            t = pd.to_datetime(concert["time"]).time()
+            concert["time"] = t.strftime("%H:%M")
+        except Exception:
+            concert["time"] = str(concert.get("time", ""))[:5]
+
+    schedules = [
+        {"id": s.get("id"), "name": s.get("name", "Untitled")}
+        for s in [load_schedule(sid) for sid in list_schedule_ids()]
+        if s and s.get("ensemble_id") == ensemble_id
+    ]
+
+    return render_template("concert_form.html", ensemble=ensemble, concert=concert, schedules=schedules)
+
+
+@app.post("/admin/ensembles/<ensemble_id>/concerts/<concert_id>/edit")
+def admin_edit_concert(ensemble_id, concert_id):
+    """Update a concert."""
+    r = admin_required_or_403()
+    if r: return r
+
+    ensemble = get_ensemble_by_id(ensemble_id)
+    if not ensemble:
+        abort(404)
+
+    concert_data = {
+        "date": request.form.get("date"),
+        "time": request.form.get("time"),
+        "venue": request.form.get("venue"),
+        "uniform": request.form.get("uniform"),
+        "programme": request.form.get("programme"),
+        "other_info": request.form.get("other_info"),
+        "schedule_id": request.form.get("schedule_id") or None,
+        "status": request.form.get("status", "scheduled"),
+    }
+
+    try:
+        update_concert(ensemble_id, concert_id, concert_data)
+        return redirect(url_for("admin_view_concerts", ensemble_id=ensemble_id))
+    except Exception as e:
+        abort(400)
+
+
+@app.post("/admin/ensembles/<ensemble_id>/concerts/<concert_id>/delete")
+def admin_delete_concert(ensemble_id, concert_id):
+    """Delete a concert."""
+    r = admin_required_or_403()
+    if r: return r
+
+    if delete_concert(ensemble_id, concert_id):
+        return redirect(url_for("admin_view_concerts", ensemble_id=ensemble_id))
+    else:
+        abort(404)
+
+
 @app.get("/debug/paths")
 def debug_paths():
     return {
@@ -1682,7 +3143,120 @@ def my_view():
     if redir:
         return redir
     u = current_user()
-    return render_template("member_dashboard.html", user=u)
+    
+    print(f"\n=== my_view called ===")
+    print(f"Current user: {u.get('email') if u else 'None'}")
+    
+    # Get user's ensembles (for concert display)
+    ensembles = load_ensembles()
+    memberships = load_memberships()
+    
+    if u and u.get("is_admin"):
+        user_ensembles = ensembles
+        print(f"User is admin, showing all {len(ensembles)} ensembles")
+    else:
+        my_ids = {m.get("ensemble_id") for m in memberships if m.get("user_id") == (u or {}).get("id") and m.get("status", "active") == "active"}
+        user_ensembles = [e for e in ensembles if e.get("id") in my_ids]
+        print(f"User is member of {len(user_ensembles)} ensembles: {[e['id'] for e in user_ensembles]}")
+    
+    # Get all concerts for user's ensembles
+    all_concerts = []
+    for ensemble in user_ensembles:
+        concerts = ensemble.get("concerts", [])
+        print(f"Ensemble '{ensemble.get('name')}' has {len(concerts)} concerts")
+        for concert in concerts:
+            concert_with_ensemble = concert.copy()
+            concert_with_ensemble["ensemble_id"] = ensemble.get("id")
+            concert_with_ensemble["ensemble_name"] = ensemble.get("name")
+            all_concerts.append(concert_with_ensemble)
+            print(f"  Added concert: {concert.get('date')} at {concert.get('venue')}")
+    
+    # Sort by date
+    all_concerts.sort(key=lambda x: x.get("date", ""), reverse=True)
+    
+    print(f"Total concerts to display: {len(all_concerts)}")
+    print(f"=== my_view complete ===\n")
+    
+    return render_template("member_dashboard.html", user=u, concerts=all_concerts)
+
+
+@app.get("/api/ensembles/<ensemble_id>/concerts")
+def api_get_ensemble_concerts(ensemble_id):
+    """Get all concerts for an ensemble (JSON API)."""
+    r = admin_required_or_403()
+    if r: return r
+    
+    concerts = get_ensemble_concerts(ensemble_id)
+    return jsonify(concerts)
+
+
+@app.post("/api/ensembles/<ensemble_id>/concerts")
+def api_create_concert(ensemble_id):
+    """Create a concert via JSON API."""
+    r = admin_required_or_403()
+    if r: return r
+    
+    payload = request.get_json(force=True)
+    try:
+        concert = add_concert_to_ensemble(ensemble_id, payload)
+        return jsonify(concert), 201
+    except Exception as e:
+        return jsonify({"error": str(e)}), 400
+
+
+@app.put("/api/ensembles/<ensemble_id>/concerts/<concert_id>")
+def api_update_concert(ensemble_id, concert_id):
+    """Update a concert via JSON API."""
+    r = admin_required_or_403()
+    if r: return r
+    
+    payload = request.get_json(force=True)
+    try:
+        concert = update_concert(ensemble_id, concert_id, payload)
+        if not concert:
+            return jsonify({"error": "Concert not found"}), 404
+        return jsonify(concert)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 400
+
+
+@app.delete("/api/ensembles/<ensemble_id>/concerts/<concert_id>")
+def api_delete_concert(ensemble_id, concert_id):
+    """Delete a concert via JSON API."""
+    r = admin_required_or_403()
+    if r: return r
+    
+    if delete_concert(ensemble_id, concert_id):
+        return jsonify({"success": True})
+    else:
+        return jsonify({"error": "Concert not found"}), 404
+
+
+@app.post("/api/admin/cleanup-duplicate-concerts")
+def api_cleanup_duplicate_concerts():
+    """Remove auto_concert_* duplicates that were created before the deduplication fix."""
+    r = admin_required_or_403()
+    if r: return r
+    
+    ensembles = load_ensembles()
+    removed_count = 0
+    
+    for ensemble in ensembles:
+        if "concerts" not in ensemble:
+            continue
+        
+        # Remove any concerts with IDs starting with "auto_concert_"
+        original_count = len(ensemble["concerts"])
+        ensemble["concerts"] = [c for c in ensemble["concerts"] if not c.get("id", "").startswith("auto_concert_")]
+        removed_count += original_count - len(ensemble["concerts"])
+    
+    save_ensembles(ensembles)
+    
+    return jsonify({
+        "success": True,
+        "removed_count": removed_count,
+        "message": f"Removed {removed_count} duplicate auto-generated concerts"
+    })
 
 
 @app.get("/api/member/rehearsals")
@@ -1692,31 +3266,51 @@ def api_member_rehearsals():
         return jsonify({"error": "Not logged in"}), 401
     
     u = current_user()
+    print(f"\n=== api_member_rehearsals called ===")
+    print(f"Current user: {u.get('email') if u else 'None'}")
+    print(f"Is admin: {u.get('is_admin') if u else False}")
+    
     ensembles = load_ensembles()
     memberships = load_memberships()
 
     if u and u.get("is_admin"):
         my_ensembles = ensembles
+        print(f"User is admin, showing all {len(ensembles)} ensembles")
     else:
         my_ids = {m.get("ensemble_id") for m in memberships if m.get("user_id") == (u or {}).get("id") and m.get("status", "active") == "active"}
         my_ensembles = [e for e in ensembles if e.get("id") in my_ids]
+        print(f"User is member of {len(my_ensembles)} ensembles: {[e['id'] for e in my_ensembles]}")
 
     # Get published schedules for user's ensembles
     schedule_summaries = []
     all_schedule_ids = list_schedule_ids()
+    print(f"Total schedules in system: {len(all_schedule_ids)}")
     
     for sid in all_schedule_ids:
-        s = load_schedule(sid)
+        try:
+            s = load_schedule(sid)
+        except Exception as e:
+            print(f"  [ERROR] Failed to load schedule {sid}: {e}")
+            import traceback
+            traceback.print_exc()
+            continue
         if not s:
             continue
 
         if u and u.get("is_admin"):
             schedule_summaries.append(s)
+            print(f"  Admin: including schedule {sid} ({s.get('name')})")
         else:
             if s.get("status") != "published":
+                print(f"  Schedule {sid} not published (status: {s.get('status')}), skipping for member")
                 continue
             if any(e["id"] == s.get("ensemble_id") for e in my_ensembles):
                 schedule_summaries.append(s)
+                print(f"  Member: including published schedule {sid} for ensemble {s.get('ensemble_id')}")
+            else:
+                print(f"  Schedule {sid} is for ensemble {s.get('ensemble_id')}, not in user's ensembles")
+
+    print(f"Found {len(schedule_summaries)} schedules to process")
 
     # Extract rehearsal data with dates and times
     rehearsals_list = []
@@ -1727,42 +3321,85 @@ def api_member_rehearsals():
         ensemble_id = sched.get("ensemble_id")
         ensemble_name = ensemble_map.get(ensemble_id, "Unknown")
         
+        print(f"\nProcessing schedule {schedule_id} ({ensemble_name})")
+        
+        # Build a map of rehearsal number -> event type from the rehearsals table
+        rehearsals_table = sched.get("rehearsals", [])
+        event_type_map = {}
+        for reh_row in rehearsals_table:
+            reh_num = reh_row.get("Rehearsal")
+            # Skip invalid rehearsal numbers (None, empty string, NaN)
+            if reh_num is not None and reh_num != "" and not pd.isna(reh_num):
+                try:
+                    event_type_map[int(reh_num)] = reh_row.get("Event Type", "Rehearsal")
+                except (ValueError, TypeError):
+                    # Skip if conversion to int fails
+                    pass
+        
         # Get timed schedule data directly from the schedule
         try:
             timed_data = sched.get("timed", [])
+            print(f"  Timed data items: {len(timed_data)}")
+            
             if not timed_data:
+                print(f"  No timed data, skipping")
                 continue
             
+            # Create a DataFrame to group by rehearsal
             timed_df = pd.DataFrame(timed_data)
             if timed_df.empty:
+                print(f"  Empty DataFrame after conversion, skipping")
+                continue
+            
+            # Group by rehearsal number
+            if "Rehearsal" not in timed_df.columns:
+                print(f"  No Rehearsal column in DataFrame, skipping")
+                print(f"  Available columns: {list(timed_df.columns)}")
                 continue
                 
-            # Group by rehearsal number
             grouped = timed_df.groupby("Rehearsal")
+            print(f"  Found {len(grouped)} rehearsals")
             
             for reh_num, group in grouped:
+                # Ensure reh_num is a clean integer
+                try:
+                    reh_num_int = int(reh_num)
+                except (ValueError, TypeError):
+                    print(f"    Skipping invalid rehearsal number: {reh_num}")
+                    continue
+                
                 # Get date from first row
-                date_val = group.iloc[0].get("Date")
-                if pd.isna(date_val):
+                if "Date" not in group.columns:
+                    print(f"    Rehearsal {reh_num_int}: No Date column, skipping")
                     continue
                     
-                # Convert date to ISO format
-                try:
-                    # Try parsing as pandas datetime first (handles most formats)
-                    if isinstance(date_val, (int, float)):
-                        # Timestamp in milliseconds
-                        date_obj = pd.to_datetime(date_val, unit='ms').date()
-                        date_str = date_obj.isoformat()
-                    elif hasattr(date_val, 'date'):
-                        # Already a datetime object
-                        date_str = date_val.date().isoformat() if hasattr(date_val, 'date') else date_val.isoformat()
-                    else:
-                        # String - parse with pandas (handles many formats automatically)
-                        date_obj = pd.to_datetime(date_val).date()
-                        date_str = date_obj.isoformat()
-                except Exception as e:
-                    print(f"  Failed to parse date '{date_val}' (type: {type(date_val)}): {e}")
+                date_val = group.iloc[0]["Date"]
+                if pd.isna(date_val):
+                    print(f"    Rehearsal {reh_num_int}: NaN date, skipping")
                     continue
+                
+                # Parse the date - it could be a string like "2026-01-16T00:00:00" or a datetime
+                try:
+                    if isinstance(date_val, str):
+                        # Parse ISO format string
+                        date_obj = pd.to_datetime(date_val).date()
+                    else:
+                        # Assume it's already a datetime-like object
+                        date_obj = pd.to_datetime(date_val).date()
+                    date_str = date_obj.isoformat()
+                except Exception as e:
+                    print(f"    Rehearsal {reh_num_int}: Error parsing date '{date_val}': {e}")
+                    continue
+                
+                # Get event type from rehearsals table
+                event_type = event_type_map.get(reh_num_int, "Rehearsal")
+                
+                # Get section if specified (first row's Section value, default to "Full Ensemble")
+                section = "Full Ensemble"
+                if "Section" in group.columns:
+                    section_val = group.iloc[0]["Section"]
+                    if pd.notna(section_val):
+                        section = str(section_val).strip()
                 
                 # Build items list for this rehearsal
                 items = []
@@ -1785,12 +3422,16 @@ def api_member_rehearsals():
                 rehearsals_list.append({
                     "schedule_id": schedule_id,
                     "ensemble_name": ensemble_name,
-                    "rehearsal_num": int(reh_num),
+                    "rehearsal_num": reh_num_int,
                     "date": date_str,
+                    "event_type": event_type,
+                    "section": section,
                     "items": items
                 })
+                print(f"    Rehearsal {reh_num_int}: {date_str}, Event Type: {event_type}, Section: {section}, {len(items)} items")
+                
         except Exception as e:
-            print(f"Error processing schedule {schedule_id}: {e}")
+            print(f"  Error processing schedule {schedule_id}: {e}")
             import traceback
             traceback.print_exc()
             continue
@@ -1798,88 +3439,69 @@ def api_member_rehearsals():
     # Sort by date
     rehearsals_list.sort(key=lambda x: (x["date"], x["ensemble_name"], x["rehearsal_num"]))
     
-    return jsonify(rehearsals_list)
-
-    # Extract rehearsal data with dates and times
-    rehearsals_list = []
-    ensemble_map = {e["id"]: e["name"] for e in ensembles}
+    # Build concerts list (for standalone display, separate from rehearsals)
+    concerts_list = []
     
-    print(f"Processing {len(schedule_summaries)} schedules for member rehearsals API")
-    
-    for sched in schedule_summaries:
-        schedule_id = sched["id"]
-        ensemble_id = sched.get("ensemble_id")
-        ensemble_name = ensemble_map.get(ensemble_id, "Unknown")
+    for ensemble in ensembles:
+        ens_id = ensemble["id"]
+        ens_name = ensemble["name"]
         
-        print(f"Processing schedule {schedule_id} for ensemble {ensemble_name}")
-        
-        # Get timed schedule data
-        try:
-            timed_df = extract_timed_schedule(sched)
-            if timed_df is None or timed_df.empty:
-                print(f"  No timed data for schedule {schedule_id}")
-                continue
-                
-            # Group by rehearsal number
-            grouped = timed_df.groupby("Rehearsal")
-            
-            for reh_num, group in grouped:
-                # Get date from first row
-                date_val = group.iloc[0].get("Date")
-                if pd.isna(date_val):
-                    print(f"  Rehearsal {reh_num} has no date")
-                    continue
-                    
-                # Convert date to ISO format
-                if isinstance(date_val, str):
-                    # Already a string, try to parse it
-                    try:
-                        date_obj = pd.to_datetime(date_val, dayfirst=True).date()
-                        date_str = date_obj.isoformat()
-                    except Exception as e:
-                        print(f"  Failed to parse date '{date_val}': {e}")
-                        continue
-                elif hasattr(date_val, 'date'):
-                    date_str = date_val.date().isoformat()
-                else:
-                    print(f"  Unknown date type for rehearsal {reh_num}: {type(date_val)}")
-                    continue
-                
-                print(f"  Found rehearsal {reh_num} on {date_str}")
-                
-                # Build items list for this rehearsal
-                items = []
-                for _, row in group.iterrows():
-                    title = row.get("Title", "")
-                    time_in_reh = row.get("Time in Rehearsal", "")
-                    
-                    if title == "Break":
-                        items.append({
-                            "is_break": True,
-                            "time": time_in_reh
-                        })
-                    else:
-                        items.append({
-                            "is_break": False,
-                            "title": title,
-                            "time": time_in_reh
-                        })
-                
-                rehearsals_list.append({
-                    "schedule_id": schedule_id,
-                    "ensemble_name": ensemble_name,
-                    "rehearsal_num": int(reh_num),
-                    "date": date_str,
-                    "items": items
-                })
-        except Exception as e:
-            print(f"Error processing schedule {schedule_id}: {e}")
+        # Check if user has access to this ensemble
+        if not (u and u.get("is_admin")) and not any(e["id"] == ens_id for e in my_ensembles):
             continue
+        
+        # Get scheduled concerts for this ensemble
+        for concert in ensemble.get("concerts", []):
+            if concert.get("status") == "scheduled":
+                try:
+                    # Parse concert date for sorting
+                    concert_date = concert.get("date", "")
+                    if isinstance(concert_date, str):
+                        concert_date_obj = pd.to_datetime(concert_date).date()
+                    else:
+                        concert_date_obj = pd.to_datetime(concert_date).date()
+                    concert_date_str = concert_date_obj.isoformat()
+                except:
+                    concert_date_str = concert.get("date", "")
+                
+                concerts_list.append({
+                    "type": "concert",
+                    "id": concert.get("id"),  # Add 'id' for JavaScript compatibility
+                    "concert_id": concert.get("id"),
+                    "ensemble_id": ens_id,  # Add ensemble_id
+                    "ensemble_name": ens_name,
+                    "title": concert.get("title", "Concert"),
+                    "date": concert_date_str,
+                    "time": concert.get("time"),
+                    "venue": concert.get("venue"),
+                    "uniform": concert.get("uniform"),
+                    "programme": concert.get("programme", ""),
+                    "other_info": concert.get("other_info", ""),
+                    "schedule_id": concert.get("schedule_id")
+                })
     
-    # Sort by date
-    rehearsals_list.sort(key=lambda x: (x["date"], x["ensemble_name"], x["rehearsal_num"]))
+    # Combine concerts and rehearsals, sort by date
+    all_events = []
+    for rehearsal in rehearsals_list:
+        all_events.append({
+            "type": "rehearsal",
+            "date": rehearsal["date"],
+            "sort_key": (rehearsal["date"], rehearsal["ensemble_name"], 0, rehearsal["rehearsal_num"]),
+            "data": rehearsal
+        })
+    for concert in concerts_list:
+        all_events.append({
+            "type": "concert",
+            "date": concert["date"],
+            "sort_key": (concert["date"], concert["ensemble_name"], -1),  # Concerts come before rehearsals on same date
+            "data": concert
+        })
     
-    return jsonify(rehearsals_list)
+    all_events.sort(key=lambda x: x["sort_key"])
+    
+    print(f"\n=== Total events to return: {len(all_events)} ({len(rehearsals_list)} rehearsals + {len(concerts_list)} concerts) ===\n")
+    
+    return jsonify({"events": all_events, "rehearsals": rehearsals_list, "concerts": concerts_list})
 
 
 @app.get("/")
@@ -1903,12 +3525,55 @@ def admin_edit_schedule(schedule_id):
     # lightweight preview timed
     timed = pd.DataFrame(s.get("timed", []))
     if timed.empty and not sched.empty and not rehearsals.empty:
-        timed = compute_timed_df(sched, prepare_rehearsals_for_allocator(rehearsals))
+        # Use prepare_all_rehearsals to include non-allocated rehearsals (sectionals)
+        timed = compute_timed_df(sched, prepare_all_rehearsals(rehearsals))
+    
+    # Clean timed data to ensure Section field has proper defaults
+    if not timed.empty:
+        cleaned_timed = clean_timed_data(s.get("timed", []))
+        s["timed"] = cleaned_timed
+        # Reload into DataFrame so template gets clean data
+        timed = pd.DataFrame(cleaned_timed)
 
-    # Resolve ensemble display name
+    # Resolve ensemble display name and get concerts
     ensembles = load_ensembles()
     ens = next((e for e in ensembles if e["id"] == s.get("ensemble_id")), None)
     ensemble_name = ens["name"] if ens else s.get("ensemble_id", "")
+    
+    # Get concerts for this schedule
+    schedule_concerts = []
+    if ens:
+        concerts = ens.get("concerts", [])
+        schedule_concerts = [c for c in concerts if c.get("schedule_id") == schedule_id]
+    
+    # Add concert_id to timed rows for concert rehearsals (same logic as /state endpoint)
+    timed_data = s.get("timed", [])
+    if ens and not rehearsals.empty:
+        for timed_row in timed_data:
+            reh_num = timed_row.get("Rehearsal")
+            if reh_num:
+                # Find rehearsal by number
+                reh_dict = next((r for r in rehearsals.to_dict(orient="records") if int(r.get("Rehearsal", 0)) == reh_num), None)
+                if reh_dict and reh_dict.get("Event Type") == "Concert":
+                    # Find the concert for this rehearsal by matching date
+                    reh_date = reh_dict.get("Date")
+                    # Normalize dates for comparison (strip time component)
+                    reh_date_normalized = str(reh_date)[:10] if reh_date else None
+                    
+                    # Try to match concert by date (comparing just YYYY-MM-DD)
+                    concert = None
+                    for c in schedule_concerts:
+                        concert_date_normalized = str(c.get("date", ""))[:10]
+                        if concert_date_normalized == reh_date_normalized:
+                            concert = c
+                            break
+                    
+                    if concert:
+                        timed_row["concert_id"] = concert.get("id")
+                        print(f"[EDIT PAGE] Added concert_id {concert.get('id')} to timed row for rehearsal {reh_num}")
+        
+        # Update timed DataFrame with concert_id links
+        timed = pd.DataFrame(timed_data)
 
     print("ADMIN CHECK:", current_user())
 
@@ -1925,6 +3590,7 @@ def admin_edit_schedule(schedule_id):
         allocation=alloc.fillna("").to_dict(orient="records") if not alloc.empty else [],
         schedule=sched.fillna("").to_dict(orient="records") if not sched.empty else [],
         timed=timed.fillna("").to_dict(orient="records") if not timed.empty else [],
+        concerts=schedule_concerts,  # Add concerts for timeline editor
         pdf_enabled=mod4_exists,
     )
 
@@ -1947,7 +3613,10 @@ def api_save_inputs():
     s["G"] = int(payload.get("G", s.get("G", DEFAULT_G)))
 
     s["works"] = payload.get("works", [])
-    s["rehearsals"] = payload.get("rehearsals", [])
+    # Auto-number rehearsals if needed
+    rehearsals_data = payload.get("rehearsals", [])
+    rehearsals_data = auto_number_rehearsals(rehearsals_data)
+    s["rehearsals"] = rehearsals_data
 
     # Keep computed artifacts unless explicitly clearing
     if payload.get("clear_computed"):
@@ -1988,7 +3657,8 @@ def api_generate_schedule():
     sched = build_schedule_from_allocation(works, alloc)
     s["schedule"] = sanitize_df_records(sched.to_dict(orient="records"))
 
-    rehe_prep = prepare_rehearsals_for_allocator(rehearsals)
+    # Use prepare_all_rehearsals to include non-allocated rehearsals (sectionals)
+    rehe_prep = prepare_all_rehearsals(rehearsals)
     timed = compute_timed_df(sched, rehe_prep)
     s["timed"] = sanitize_df_records(timed.to_dict(orient="records"))
     s["generated_at"] = pd.Timestamp.utcnow().isoformat() + "Z"
@@ -2088,9 +3758,141 @@ def api_schedule_import_xlsx(schedule_id):
 
     # Save to state
     s["works_cols"] = works_cols
-    s["rehearsals_cols"] = rehe_cols
+    
+    # Auto-number rehearsals if missing or empty
+    rehearsals_data = df_rehe.to_dict(orient="records")
+    rehearsals_data = auto_number_rehearsals(rehearsals_data)
+    # Normalize "Ensemble" column to "Section" if present
+    rehearsals_data = normalize_section_column(rehearsals_data)
+    # Ensure Include in allocation column is present
+    rehearsals_data = ensure_include_in_allocation_column(rehearsals_data)
+    # Ensure Section column is present
+    rehearsals_data = ensure_section_column(rehearsals_data)
+    # Ensure Event Type column is present
+    rehearsals_data = ensure_event_type_column(rehearsals_data)
+    s["rehearsals"] = rehearsals_data
+    
+    # Auto-create concerts for rehearsals marked as "Concert" event type
+    ensembles = load_ensembles()
+    ensemble = next((e for e in ensembles if e["id"] == s.get("ensemble_id")), None)
+    if ensemble:
+        print(f"\n[CONCERT CREATE] Starting concert auto-creation for {len(rehearsals_data)} rehearsals")
+        print(f"[CONCERT CREATE] Ensemble: {ensemble.get('name')} (ID: {ensemble.get('id')})")
+        concerts_created = 0
+        concerts_updated = 0
+        
+        for idx, reh_row in enumerate(rehearsals_data):
+            event_type_value = reh_row.get("Event Type")
+            print(f"\n[CONCERT CREATE] Row {idx+1}: Event Type = {repr(event_type_value)} | Date = {reh_row.get('Date')}")
+            
+            # More robust matching - handle case variations and whitespace
+            event_type_normalized = str(event_type_value).strip() if event_type_value else ""
+            is_concert = event_type_normalized.lower() == "concert"
+            
+            print(f"[CONCERT CREATE]   Normalized: '{event_type_normalized}' | Is Concert: {is_concert}")
+            
+            if is_concert:
+                print(f"[CONCERT CREATE] ✓ Processing rehearsal with Event Type=Concert")
+                # Check if concert already exists for this date/time combination
+                concert_date = reh_row.get("Date", "")
+                concert_time = reh_row.get("Start Time", "")
+                
+                # Normalize date to string format YYYY-MM-DD HH:MM:SS (to match other rehearsals)
+                if concert_date:
+                    try:
+                        dt = pd.to_datetime(concert_date)
+                        concert_date = dt.strftime("%Y-%m-%d 00:00:00")  # Include time component for consistency
+                        reh_row["Date"] = concert_date  # Update the rehearsal row with normalized date
+                    except:
+                        concert_date = str(concert_date)
+                
+                # Find existing concert for this schedule and date (deduplication)
+                existing_concert = None
+                for c in ensemble.get("concerts", []):
+                    if c.get("schedule_id") == schedule_id and c.get("date") == concert_date:
+                        existing_concert = c
+                        break
+                
+                if concert_date:
+                    concert_id = None
+                    print(f"\n[CONCERT CREATE] Processing rehearsal with Event Type=Concert")
+                    print(f"[CONCERT CREATE] Date: {concert_date}, Schedule: {schedule_id}")
+                    print(f"[CONCERT CREATE] Existing concerts in ensemble: {len(ensemble.get('concerts', []))}")
+                    
+                    # Format date for title
+                    try:
+                        dt = pd.to_datetime(concert_date)
+                        day = dt.day
+                        if 10 <= day % 100 <= 20:
+                            suffix = 'th'
+                        else:
+                            suffix = {1: 'st', 2: 'nd', 3: 'rd'}.get(day % 10, 'th')
+                        formatted_date = dt.strftime(f'%A %B {day}{suffix}')
+                    except:
+                        formatted_date = str(concert_date)
+                    
+                    default_title = f"{ensemble.get('name', 'Unknown Ensemble')} - Concert - {formatted_date}"
+                    
+                    if existing_concert:
+                        # Update existing concert with new data from Excel
+                        print(f"[CONCERT CREATE] Updating existing concert: {existing_concert['id']}")
+                        existing_concert["title"] = reh_row.get("Concert Title") or existing_concert.get("title", default_title)
+                        existing_concert["time"] = reh_row.get("Start Time", existing_concert.get("time", ""))
+                        existing_concert["venue"] = reh_row.get("Venue", existing_concert.get("venue", ""))
+                        existing_concert["uniform"] = reh_row.get("Uniform", existing_concert.get("uniform", ""))
+                        existing_concert["programme"] = reh_row.get("Programme", existing_concert.get("programme", ""))
+                        existing_concert["other_info"] = reh_row.get("Other Info", existing_concert.get("other_info", ""))
+                        concert_id = existing_concert["id"]
+                        concerts_updated += 1
+                    else:
+                        # Create a new concert with details from Excel
+                        concert_id = f"concert_{uuid.uuid4().hex[:12]}"
+                        print(f"[CONCERT CREATE] Creating NEW concert: {concert_id}")
+                        new_concert = {
+                            "id": concert_id,
+                            "title": reh_row.get("Concert Title") or default_title,
+                            "date": concert_date,
+                            "time": reh_row.get("Start Time", ""),
+                            "venue": reh_row.get("Venue", ""),
+                            "uniform": reh_row.get("Uniform", ""),
+                            "programme": reh_row.get("Programme", ""),
+                            "other_info": reh_row.get("Other Info", ""),
+                            "status": "scheduled",
+                            "schedule_id": schedule_id,
+                            "is_auto_generated": True
+                        }
+                        if "concerts" not in ensemble:
+                            ensemble["concerts"] = []
+                        ensemble["concerts"].append(new_concert)
+                        concerts_created += 1
+                        print(f"[CONCERT CREATE] Concert added to ensemble. Total concerts: {len(ensemble['concerts'])}")
+                    
+                    # Link concert_id back to rehearsal row for easy access
+                    reh_row["concert_id"] = concert_id
+                    print(f"[CONCERT CREATE] Linked concert_id {concert_id} to rehearsal row")
+        
+        # Save updated ensemble with new/updated concerts
+        if concerts_created > 0 or concerts_updated > 0:
+            save_ensembles(ensembles)
+            print(f"\n[CONCERT CREATE] SUMMARY: Created {concerts_created}, Updated {concerts_updated} concerts")
+            print(f"[CONCERT CREATE] Total concerts in ensemble: {len(ensemble.get('concerts', []))}")
+        else:
+            print(f"\n[CONCERT CREATE] No concerts created or updated")
+    
+    # Ensure rehearsals_cols always includes "Rehearsal" and "Include in allocation"
+    # Use the columns from the processed data to ensure consistency
+    if rehearsals_data and len(rehearsals_data) > 0:
+        actual_cols = list(rehearsals_data[0].keys())
+        # Ensure "Rehearsal" column is in the list
+        if "Rehearsal" not in actual_cols:
+            actual_cols.insert(0, "Rehearsal")
+        s["rehearsals_cols"] = actual_cols
+    else:
+        # Ensure default columns include "Rehearsal"
+        default_cols = list(default_rehearsals_df().columns)
+        s["rehearsals_cols"] = default_cols
+    
     s["works"] = df_works.to_dict(orient="records")
-    s["rehearsals"] = df_rehe.to_dict(orient="records")
 
     # Clear computed artifacts
     s["allocation"] = []
@@ -2146,7 +3948,8 @@ def api_update_rehearsal_schedule():
     sched2 = pd.concat([sched_other, sched_new], ignore_index=True)
     s["schedule"] = sanitize_df_records(sched2.to_dict(orient="records"))
 
-    rehe_prep = prepare_rehearsals_for_allocator(rehearsals)
+    # Use prepare_all_rehearsals to include non-allocated rehearsals (sectionals)
+    rehe_prep = prepare_all_rehearsals(rehearsals)
     timed = compute_timed_df(sched2, rehe_prep)
     s["timed"] = timed.to_dict(orient="records")
     s["generated_at"] = pd.Timestamp.utcnow().isoformat() + "Z"
@@ -2216,15 +4019,25 @@ def download_schedule_pdf(schedule_id):
         r = ensemble_member_required_or_403(s["ensemble_id"])
         if r: return r
 
-    # Get ensemble name
+    # Get ensemble name and concerts
     ensembles = load_ensembles()
     ensemble = next((e for e in ensembles if e["id"] == s.get("ensemble_id")), None)
     ensemble_name = ensemble["name"] if ensemble else s.get("ensemble_id", "Schedule")
+    
+    # Get linked concerts
+    linked_concerts = []
+    if ensemble:
+        linked_concerts = [c for c in ensemble.get("concerts", []) if c.get("schedule_id") == schedule_id and c.get("status") == "scheduled"]
 
-    # Get timed schedule
-    timed = pd.DataFrame(s.get("timed", []))
+    # Get timed schedule and clean it to ensure sections are populated
+    timed_data = clean_timed_data(s.get("timed", []))
+    timed = pd.DataFrame(timed_data)
     if timed.empty:
         return "No schedule data available", 404
+    
+    # Get rehearsals data to check event types
+    rehearsals_data = s.get("rehearsals", [])
+    rehearsals_df = pd.DataFrame(rehearsals_data) if rehearsals_data else pd.DataFrame()
 
     # Create PDF in memory
     from io import BytesIO
@@ -2252,62 +4065,181 @@ def download_schedule_pdf(schedule_id):
     story.append(Paragraph("Rehearsal Schedule", title_style))
     story.append(Spacer(1, 0.5*cm))
     
-    # Group by rehearsal
+    # Build a list of all events (rehearsals and concerts) with their dates for chronological sorting
+    all_events = []
+    
+    # Add rehearsals (but skip concerts - they're added separately from linked_concerts)
     for reh_num, group in timed.groupby("Rehearsal"):
-        # Get date
+        # Check if this rehearsal is actually a concert in the rehearsals table
+        is_concert = False
+        if not rehearsals_df.empty:
+            reh_row = rehearsals_df[rehearsals_df['Rehearsal'].astype(str) == str(int(reh_num))]
+            if not reh_row.empty:
+                event_type = reh_row.iloc[0].get('Event Type', 'Rehearsal')
+                if event_type == 'Concert':
+                    is_concert = True
+        
+        # Skip concerts - they're handled separately
+        if is_concert:
+            continue
+        
         date_val = group.iloc[0].get("Date")
-        if not pd.isna(date_val):
+        event_type = group.iloc[0].get("Event Type", "Rehearsal")
+        
+        # Ensure date is a Timestamp for consistent sorting
+        try:
+            if pd.isna(date_val):
+                date_ts = pd.NaT
+            elif isinstance(date_val, str):
+                date_ts = pd.to_datetime(date_val, errors='coerce')
+            elif hasattr(date_val, 'strftime'):
+                date_ts = pd.Timestamp(date_val)
+            else:
+                date_ts = pd.to_datetime(date_val, errors='coerce')
+        except:
+            date_ts = pd.NaT
+        
+        all_events.append({
+            'type': 'rehearsal',
+            'reh_num': reh_num,
+            'group': group,
+            'date': date_ts,
+            'event_type': event_type
+        })
+    
+    # Add concerts
+    if linked_concerts:
+        for concert in linked_concerts:
+            concert_date = concert.get('date', '')
             try:
-                if isinstance(date_val, (int, float)):
-                    date_obj = pd.to_datetime(date_val, unit='ms')
-                elif hasattr(date_val, 'strftime'):
-                    date_obj = date_val
-                else:
-                    date_obj = pd.to_datetime(date_val)
-                
-                day = date_obj.day
-                if 10 <= day % 100 <= 20:
-                    suffix = 'th'
-                else:
-                    suffix = {1: 'st', 2: 'nd', 3: 'rd'}.get(day % 10, 'th')
-                date_str = date_obj.strftime(f'%A {day}{suffix} %B, %Y')
+                date_obj = pd.to_datetime(concert_date) if concert_date else pd.NaT
             except:
-                date_str = str(date_val)
-        else:
-            date_str = ""
-        
-        # Rehearsal heading
-        story.append(Paragraph(f"<b>Rehearsal {int(reh_num)}</b> - {date_str}", heading_style))
-        
-        # Table data
-        table_data = [['Time', 'Item', 'Break']]
-        for _, row in group.iterrows():
-            time_str = row.get("Time in Rehearsal", "")
-            title = row.get("Title", "")
-            break_info = ""
-            if row.get("Break Start (HH:MM)"):
-                break_info = f"{row.get('Break Start (HH:MM)')} - {row.get('Break End (HH:MM)')}"
+                date_obj = pd.NaT
+            all_events.append({
+                'type': 'concert',
+                'concert': concert,
+                'date': date_obj
+            })
+    
+    # Sort all events chronologically (all dates are now Timestamps or NaT)
+    all_events.sort(key=lambda x: x['date'] if not pd.isna(x['date']) else pd.Timestamp.max)
+    
+    # Render events in chronological order
+    for event in all_events:
+        if event['type'] == 'concert':
+            # Render concert
+            concert = event['concert']
+            concert_data = []
             
-            table_data.append([time_str, title, break_info])
-        
-        # Create table
-        table = Table(table_data, colWidths=[3*cm, 10*cm, 4*cm])
-        table.setStyle(TableStyle([
-            ('BACKGROUND', (0, 0), (-1, 0), colors.grey),
-            ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
-            ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
-            ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-            ('FONTSIZE', (0, 0), (-1, 0), 10),
-            ('BOTTOMPADDING', (0, 0), (-1, 0), 8),
-            ('BACKGROUND', (0, 1), (-1, -1), colors.beige),
-            ('GRID', (0, 0), (-1, -1), 1, colors.black),
-            ('FONTNAME', (0, 1), (-1, -1), 'Helvetica'),
-            ('FONTSIZE', (0, 1), (-1, -1), 9),
-            ('VALIGN', (0, 0), (-1, -1), 'TOP'),
-        ]))
-        
-        story.append(table)
-        story.append(Spacer(1, 0.5*cm))
+            # Parse date for better formatting
+            concert_date = concert.get('date', '')
+            try:
+                if concert_date:
+                    date_obj = pd.to_datetime(concert_date)
+                    day = date_obj.day
+                    if 10 <= day % 100 <= 20:
+                        suffix = 'th'
+                    else:
+                        suffix = {1: 'st', 2: 'nd', 3: 'rd'}.get(day % 10, 'th')
+                    formatted_date = date_obj.strftime(f'%A {day}{suffix} %B, %Y')
+                else:
+                    formatted_date = 'TBA'
+            except:
+                formatted_date = concert_date
+            
+            concert_data.append([Paragraph(f"<b>{concert.get('title', 'Untitled Concert')}</b>", styles['Normal'])])
+            concert_data.append([Paragraph(f"<b>Date:</b> {formatted_date}", styles['Normal'])])
+            concert_data.append([Paragraph(f"<b>Time:</b> {concert.get('time', 'TBA')}", styles['Normal'])])
+            
+            if concert.get('venue'):
+                concert_data.append([Paragraph(f"<b>Venue:</b> {concert.get('venue')}", styles['Normal'])])
+            if concert.get('uniform'):
+                concert_data.append([Paragraph(f"<b>Uniform:</b> {concert.get('uniform')}", styles['Normal'])])
+            if concert.get('programme'):
+                concert_data.append([Paragraph(f"<b>Programme:</b> {concert.get('programme')}", styles['Normal'])])
+            if concert.get('other_info'):
+                concert_data.append([Paragraph(f"<b>Notes:</b> {concert.get('other_info')}", styles['Normal'])])
+            
+            concert_table = Table(concert_data, colWidths=[16*cm])
+            concert_table.setStyle(TableStyle([
+                ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#dbeafe')),
+                ('TEXTCOLOR', (0, 0), (-1, 0), colors.HexColor('#1e40af')),
+                ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
+                ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+                ('FONTSIZE', (0, 0), (-1, 0), 12),
+                ('BOTTOMPADDING', (0, 0), (-1, -1), 8),
+                ('TOPPADDING', (0, 0), (-1, -1), 8),
+                ('GRID', (0, 0), (-1, -1), 1, colors.HexColor('#93c5fd')),
+                ('BOX', (0, 0), (-1, -1), 2, colors.HexColor('#3b82f6')),
+            ]))
+            story.append(concert_table)
+            story.append(Spacer(1, 0.5*cm))
+            
+        else:
+            # Render rehearsal
+            reh_num = event['reh_num']
+            group = event['group']
+            
+            # Get date
+            date_val = group.iloc[0].get("Date")
+            if not pd.isna(date_val):
+                try:
+                    if isinstance(date_val, (int, float)):
+                        date_obj = pd.to_datetime(date_val, unit='ms')
+                    elif hasattr(date_val, 'strftime'):
+                        date_obj = date_val
+                    else:
+                        date_obj = pd.to_datetime(date_val)
+                    
+                    day = date_obj.day
+                    if 10 <= day % 100 <= 20:
+                        suffix = 'th'
+                    else:
+                        suffix = {1: 'st', 2: 'nd', 3: 'rd'}.get(day % 10, 'th')
+                    date_str = date_obj.strftime(f'%A {day}{suffix} %B, %Y')
+                except:
+                    date_str = str(date_val)
+            else:
+                date_str = ""
+            
+            # Get section
+            section = group.iloc[0].get("Section", "Full Ensemble") if not group.empty else "Full Ensemble"
+            
+            # Rehearsal heading
+            reh_heading = f"<b>Rehearsal {int(reh_num)}</b> - {date_str}"
+            if section and section != "Full Ensemble":
+                reh_heading += f" ({section})"
+            story.append(Paragraph(reh_heading, heading_style))
+            
+            # Table data
+            table_data = [['Time', 'Item', 'Break']]
+            for _, row in group.iterrows():
+                time_str = row.get("Time in Rehearsal", "")
+                title = row.get("Title", "")
+                break_info = ""
+                if row.get("Break Start (HH:MM)"):
+                    break_info = f"{row.get('Break Start (HH:MM)')} - {row.get('Break End (HH:MM)')}"
+                
+                table_data.append([time_str, title, break_info])
+            
+            # Create table
+            table = Table(table_data, colWidths=[3*cm, 10*cm, 4*cm])
+            table.setStyle(TableStyle([
+                ('BACKGROUND', (0, 0), (-1, 0), colors.grey),
+                ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+                ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
+                ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+                ('FONTSIZE', (0, 0), (-1, 0), 10),
+                ('BOTTOMPADDING', (0, 0), (-1, 0), 8),
+                ('BACKGROUND', (0, 1), (-1, -1), colors.beige),
+                ('GRID', (0, 0), (-1, -1), 1, colors.black),
+                ('FONTNAME', (0, 1), (-1, -1), 'Helvetica'),
+                ('FONTSIZE', (0, 1), (-1, -1), 9),
+                ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+            ]))
+            
+            story.append(table)
+            story.append(Spacer(1, 0.5*cm))
     
     # Build PDF
     doc.build(story)
@@ -2374,7 +4306,10 @@ def download_my_schedule_pdf():
             
             for reh_num, group in grouped:
                 date_val = group.iloc[0].get("Date")
-                if pd.isna(date_val):
+                
+                # Skip if date is NaT or missing
+                if pd.isna(date_val) or date_val is None:
+                    print(f"[PDF] Skipping rehearsal {reh_num} - NaT or None date")
                     continue
                     
                 try:
@@ -2384,13 +4319,24 @@ def download_my_schedule_pdf():
                         date_obj = date_val.to_pydatetime()
                     else:
                         date_obj = pd.to_datetime(date_val)
-                except:
+                    
+                    # Additional check: ensure date_obj is valid
+                    if pd.isna(date_obj):
+                        print(f"[PDF] Skipping rehearsal {reh_num} - date conversion resulted in NaT")
+                        continue
+                        
+                except Exception as e:
+                    print(f"[PDF] Skipping rehearsal {reh_num} - date parsing failed: {e}")
                     continue
+                
+                # Get section
+                section = group.iloc[0].get("Section", "Full Ensemble") if not group.empty else "Full Ensemble"
                 
                 rehearsals_list.append({
                     "date": date_obj,
                     "ensemble_name": ensemble_name,
                     "rehearsal_num": int(reh_num),
+                    "section": section,
                     "items": group.to_dict(orient="records")
                 })
         except Exception as e:
@@ -2435,6 +4381,11 @@ def download_my_schedule_pdf():
     for reh in rehearsals_list:
         date_obj = reh["date"]
         
+        # Skip if date is NaT (safety check)
+        if pd.isna(date_obj):
+            print(f"[PDF] Skipping rehearsal {reh.get('rehearsal_num')} in rendering - NaT date")
+            continue
+        
         # Date heading
         if current_date is None or current_date.date() != date_obj.date():
             current_date = date_obj
@@ -2448,7 +4399,10 @@ def download_my_schedule_pdf():
             story.append(Paragraph(date_str, heading_style))
         
         # Rehearsal info
-        story.append(Paragraph(f"<b>{reh['ensemble_name']}</b> - Rehearsal {reh['rehearsal_num']}", 
+        reh_info = f"<b>{reh['ensemble_name']}</b> - Rehearsal {reh['rehearsal_num']}"
+        if reh.get('section') and reh['section'] != 'Full Ensemble':
+            reh_info += f" ({reh['section']})"
+        story.append(Paragraph(reh_info, 
                               ParagraphStyle('RehInfo', parent=styles['Normal'], fontSize=10, leftIndent=0.5*cm, spaceAfter=4)))
         
         # Table data
