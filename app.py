@@ -4283,8 +4283,8 @@ def download_my_schedule_pdf():
             if any(e["id"] == s.get("ensemble_id") for e in my_ensembles):
                 schedule_summaries.append(s)
 
-    # Extract rehearsal data
-    rehearsals_list = []
+    # Extract rehearsal + concert data
+    events_list = []
     ensemble_map = {e["id"]: e["name"] for e in ensembles}
     
     for sched in schedule_summaries:
@@ -4296,22 +4296,54 @@ def download_my_schedule_pdf():
             timed_data = sched.get("timed", [])
             if not timed_data:
                 continue
-            
+
             timed_df = pd.DataFrame(timed_data)
             if timed_df.empty:
                 continue
-                
+
+            # Build concert lookup for this schedule (match by id or date)
+            ensemble = next((e for e in ensembles if e.get("id") == ensemble_id), None)
+            ensemble_concerts = ensemble.get("concerts", []) if ensemble else []
+            # Gather rehearsal dates for fallback matching
+            rehearsal_dates = set()
+            rehearsal_dates_norm = set()
+            for reh_row in sched.get("rehearsals", []):
+                dval = reh_row.get("Date")
+                if dval:
+                    try:
+                        dt = pd.to_datetime(dval)
+                        rehearsal_dates.add(dt.strftime("%Y-%m-%d 00:00:00"))
+                        rehearsal_dates_norm.add(dt.strftime("%Y-%m-%d"))
+                    except Exception:
+                        pass
+
+            linked_concerts = []
+            for c in ensemble_concerts:
+                if c.get("status") != "scheduled":
+                    continue
+                c_date = c.get("date", "")
+                c_date_norm = str(c_date)[:10]
+                if (
+                    c.get("schedule_id") == schedule_id
+                    or c_date in rehearsal_dates
+                    or c_date_norm in rehearsal_dates_norm
+                ):
+                    linked_concerts.append(c)
+
+            concert_by_id = {c.get("id"): c for c in linked_concerts if c.get("id")}
+            concert_by_date = {str(c.get("date", ""))[:10]: c for c in linked_concerts if c.get("date")}
+
             # Group by rehearsal number
             grouped = timed_df.groupby("Rehearsal")
-            
+
             for reh_num, group in grouped:
                 date_val = group.iloc[0].get("Date")
-                
+
                 # Skip if date is NaT or missing
                 if pd.isna(date_val) or date_val is None:
                     print(f"[PDF] Skipping rehearsal {reh_num} - NaT or None date")
                     continue
-                    
+
                 try:
                     if isinstance(date_val, (int, float)):
                         date_obj = pd.to_datetime(date_val, unit='ms')
@@ -4319,34 +4351,58 @@ def download_my_schedule_pdf():
                         date_obj = date_val.to_pydatetime()
                     else:
                         date_obj = pd.to_datetime(date_val)
-                    
-                    # Additional check: ensure date_obj is valid
+
                     if pd.isna(date_obj):
                         print(f"[PDF] Skipping rehearsal {reh_num} - date conversion resulted in NaT")
                         continue
-                        
+
                 except Exception as e:
                     print(f"[PDF] Skipping rehearsal {reh_num} - date parsing failed: {e}")
                     continue
-                
-                # Get section
-                section = group.iloc[0].get("Section", "Full Ensemble") if not group.empty else "Full Ensemble"
-                
-                rehearsals_list.append({
-                    "date": date_obj,
-                    "ensemble_name": ensemble_name,
-                    "rehearsal_num": int(reh_num),
-                    "section": section,
-                    "items": group.to_dict(orient="records")
-                })
+
+                event_type = group.iloc[0].get("Event Type", "Rehearsal")
+
+                if event_type == "Concert":
+                    cid = group.iloc[0].get("concert_id")
+                    concert = concert_by_id.get(cid)
+                    if not concert:
+                        concert = concert_by_date.get(str(date_obj.date())) or concert_by_date.get(str(date_val)[:10])
+
+                    # Fallback: synthesize from timed row
+                    if not concert:
+                        concert = {
+                            "title": group.iloc[0].get("Title", "Concert"),
+                            "date": str(date_obj.date()),
+                            "time": group.iloc[0].get("Time in Rehearsal", ""),
+                            "schedule_id": schedule_id,
+                            "id": cid,
+                        }
+
+                    events_list.append({
+                        "type": "concert",
+                        "date": date_obj,
+                        "ensemble_name": ensemble_name,
+                        "concert": concert,
+                    })
+                else:
+                    section = group.iloc[0].get("Section", "Full Ensemble") if not group.empty else "Full Ensemble"
+
+                    events_list.append({
+                        "type": "rehearsal",
+                        "date": date_obj,
+                        "ensemble_name": ensemble_name,
+                        "rehearsal_num": int(reh_num),
+                        "section": section,
+                        "items": group.to_dict(orient="records"),
+                    })
         except Exception as e:
             print(f"Error processing schedule {schedule_id}: {e}")
             continue
-    
+
     # Sort by date
-    rehearsals_list.sort(key=lambda x: x["date"])
-    
-    if not rehearsals_list:
+    events_list.sort(key=lambda x: x.get("date", pd.Timestamp.max))
+
+    if not events_list:
         return "No rehearsals found", 404
 
     # Create PDF
@@ -4378,14 +4434,13 @@ def download_my_schedule_pdf():
     
     # Group by date for summary
     current_date = None
-    for reh in rehearsals_list:
-        date_obj = reh["date"]
-        
+    for ev in events_list:
+        date_obj = ev.get("date")
+
         # Skip if date is NaT (safety check)
         if pd.isna(date_obj):
-            print(f"[PDF] Skipping rehearsal {reh.get('rehearsal_num')} in rendering - NaT date")
             continue
-        
+
         # Date heading
         if current_date is None or current_date.date() != date_obj.date():
             current_date = date_obj
@@ -4395,41 +4450,77 @@ def download_my_schedule_pdf():
             else:
                 suffix = {1: 'st', 2: 'nd', 3: 'rd'}.get(day % 10, 'th')
             date_str = date_obj.strftime(f'%A {day}{suffix} %B, %Y')
-            
+
             story.append(Paragraph(date_str, heading_style))
-        
-        # Rehearsal info
-        reh_info = f"<b>{reh['ensemble_name']}</b> - Rehearsal {reh['rehearsal_num']}"
-        if reh.get('section') and reh['section'] != 'Full Ensemble':
-            reh_info += f" ({reh['section']})"
-        story.append(Paragraph(reh_info, 
-                              ParagraphStyle('RehInfo', parent=styles['Normal'], fontSize=10, leftIndent=0.5*cm, spaceAfter=4)))
-        
-        # Table data
-        table_data = [['Time', 'Item']]
-        for item in reh['items']:
-            time_str = item.get("Time in Rehearsal", "")
-            title = item.get("Title", "")
-            table_data.append([time_str, title])
-        
-        # Create table
-        table = Table(table_data, colWidths=[3*cm, 12*cm])
-        table.setStyle(TableStyle([
-            ('BACKGROUND', (0, 0), (-1, 0), colors.lightgrey),
-            ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
-            ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-            ('FONTSIZE', (0, 0), (-1, 0), 9),
-            ('BOTTOMPADDING', (0, 0), (-1, 0), 6),
-            ('GRID', (0, 0), (-1, -1), 0.5, colors.grey),
-            ('FONTNAME', (0, 1), (-1, -1), 'Helvetica'),
-            ('FONTSIZE', (0, 1), (-1, -1), 8),
-            ('VALIGN', (0, 0), (-1, -1), 'TOP'),
-            ('LEFTPADDING', (0, 0), (-1, -1), 4),
-            ('RIGHTPADDING', (0, 0), (-1, -1), 4),
-        ]))
-        
-        story.append(table)
-        story.append(Spacer(1, 0.3*cm))
+
+        if ev.get("type") == "concert":
+            concert = ev.get("concert", {})
+            title = concert.get("title", "Concert")
+            time_str = concert.get("time") or "TBA"
+            venue = concert.get("venue")
+            uniform = concert.get("uniform")
+            programme = concert.get("programme")
+            other = concert.get("other_info") or concert.get("notes")
+
+            story.append(Paragraph(f"<b>{ev.get('ensemble_name', '')}</b> - 🎵 {title}",
+                                   ParagraphStyle('ConcertHeading', parent=styles['Normal'], fontSize=11, leftIndent=0.5*cm, spaceAfter=4)))
+
+            table_data = [["Time", time_str]]
+            if venue:
+                table_data.append(["Venue", venue])
+            if uniform:
+                table_data.append(["Uniform", uniform])
+            if programme:
+                table_data.append(["Programme", programme])
+            if other:
+                table_data.append(["Notes", other])
+
+            table = Table(table_data, colWidths=[3*cm, 12*cm])
+            table.setStyle(TableStyle([
+                ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#dbeafe')),
+                ('TEXTCOLOR', (0, 0), (-1, 0), colors.HexColor('#1e3a8a')),
+                ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+                ('GRID', (0, 0), (-1, -1), 0.5, colors.HexColor('#93c5fd')),
+                ('FONTNAME', (0, 1), (-1, -1), 'Helvetica'),
+                ('FONTSIZE', (0, 0), (-1, -1), 9),
+                ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
+                ('LEFTPADDING', (0, 0), (-1, -1), 4),
+                ('RIGHTPADDING', (0, 0), (-1, -1), 4),
+            ]))
+
+            story.append(table)
+            story.append(Spacer(1, 0.3*cm))
+
+        else:
+            reh_info = f"<b>{ev['ensemble_name']}</b> - Rehearsal {ev['rehearsal_num']}"
+            if ev.get('section') and ev['section'] != 'Full Ensemble':
+                reh_info += f" ({ev['section']})"
+            story.append(Paragraph(reh_info,
+                                  ParagraphStyle('RehInfo', parent=styles['Normal'], fontSize=10, leftIndent=0.5*cm, spaceAfter=4)))
+
+            table_data = [['Time', 'Item']]
+            for item in ev['items']:
+                time_str = item.get("Time in Rehearsal", "")
+                title = item.get("Title", "")
+                table_data.append([time_str, title])
+
+            table = Table(table_data, colWidths=[3*cm, 12*cm])
+            table.setStyle(TableStyle([
+                ('BACKGROUND', (0, 0), (-1, 0), colors.lightgrey),
+                ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
+                ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+                ('FONTSIZE', (0, 0), (-1, 0), 9),
+                ('BOTTOMPADDING', (0, 0), (-1, 0), 6),
+                ('GRID', (0, 0), (-1, -1), 0.5, colors.grey),
+                ('FONTNAME', (0, 1), (-1, -1), 'Helvetica'),
+                ('FONTSIZE', (0, 1), (-1, -1), 8),
+                ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+                ('LEFTPADDING', (0, 0), (-1, -1), 4),
+                ('RIGHTPADDING', (0, 0), (-1, -1), 4),
+            ]))
+
+            story.append(table)
+            story.append(Spacer(1, 0.3*cm))
     
     # Build PDF
     doc.build(story)
