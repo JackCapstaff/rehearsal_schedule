@@ -7,6 +7,7 @@ import subprocess
 import importlib.util
 import uuid
 import time
+import requests
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
 import datetime as _dt
@@ -62,7 +63,12 @@ TIMED_XLSX_OUT = "timed_rehearsal.xlsx"  # for script4 compatibility
 
 ADMIN_EMAIL = (os.environ.get("ADMIN_EMAIL") or "").strip().lower()
 
-EMAIL_API_KEY = os.environ.get("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")
+# Outbound email (Brevo) configuration
+BREVO_API_KEY = os.environ.get("BREVO_API_KEY", "").strip()
+BREVO_FROM_EMAIL = os.environ.get("BREVO_FROM_EMAIL", "rehearsals@jackcapstaff.com").strip()
+BREVO_FROM_NAME = os.environ.get("BREVO_FROM_NAME", "Rehearsal Schedule").strip()
+BREVO_PRIMARY_TO = os.environ.get("BREVO_PRIMARY_TO", BREVO_FROM_EMAIL).strip()
+AUDIT_LOG_LIMIT = 500
 
 
 
@@ -210,6 +216,12 @@ def load_schedule(schedule_id: str) -> dict:
                     else:
                         cols.append(required_col)
             s["rehearsals_cols"] = cols
+
+    # Ensure audit log fields exist
+    if "audit_log" not in s or not isinstance(s.get("audit_log"), list):
+        s["audit_log"] = []
+    if "last_notified_at" not in s:
+        s["last_notified_at"] = None
     
     return s
 
@@ -264,6 +276,8 @@ def make_new_schedule(ensemble_id: str, name: str, created_by: str | None = None
         "schedule": [],
         "timed": [],
         "timed_history": [],
+        "audit_log": [],
+        "last_notified_at": None,
         "generated_at": None,
     }
 
@@ -315,6 +329,7 @@ def migrate_project_json_if_needed():
     ensembles = load_ensembles()
     default_ens = ensembles[0]["id"] if ensembles else "default"
     s = make_new_schedule(default_ens, "Default Schedule", created_by=None)
+    add_audit_entry(s, action="timed_edit", description=description, actor=actor, meta={"action": action, "count": len(timed_updates)})
     save_schedule(s)
     set_default_schedule_id(s["id"])
 
@@ -694,6 +709,13 @@ def add_concert_to_ensemble(ensemble_id: str, concert_data: dict) -> dict:
     
     ensemble["concerts"].append(concert)
     save_ensembles(ensembles)
+    # Audit
+    schedule_id = concert.get("schedule_id")
+    if schedule_id:
+        s = load_schedule(schedule_id)
+        if s:
+            add_audit_entry(s, action="concert_added", description=f"Concert added: {concert.get('title')}", actor=current_user(), meta={"concert_id": concert.get("id"), "date": concert.get("date"), "time": concert.get("time")})
+            save_schedule(s)
     return concert
 
 
@@ -755,6 +777,13 @@ def update_concert(ensemble_id: str, concert_id: str, concert_data: dict) -> Opt
     concert["status"] = concert_data.get("status", concert["status"])
     
     save_ensembles(ensembles)
+    # Audit
+    schedule_id = concert.get("schedule_id")
+    if schedule_id:
+        s = load_schedule(schedule_id)
+        if s:
+            add_audit_entry(s, action="concert_updated", description=f"Concert updated: {concert.get('title')}", actor=current_user(), meta={"concert_id": concert_id, "date": concert.get("date"), "time": concert.get("time")})
+            save_schedule(s)
     
     # SYNC: Update corresponding rehearsal row in schedule
     schedule_id = concert.get("schedule_id")
@@ -816,6 +845,13 @@ def delete_concert(ensemble_id: str, concert_id: str) -> bool:
     
     if len(ensemble["concerts"]) < original_len:
         save_ensembles(ensembles)
+        # Audit
+        schedules = [c.get("schedule_id") for c in concerts if c.get("id") == concert_id and c.get("schedule_id")]
+        for sid in schedules:
+            s = load_schedule(sid)
+            if s:
+                add_audit_entry(s, action="concert_deleted", description=f"Concert deleted: {concert_id}", actor=current_user(), meta={"concert_id": concert_id})
+                save_schedule(s)
         return True
     return False
 
@@ -879,6 +915,310 @@ def admin_required_or_403():
     return None
 
 
+# ----------------------------
+# Audit log helpers
+# ----------------------------
+def add_audit_entry(schedule: dict, action: str, description: str, actor: Optional[dict] = None, meta: Optional[dict] = None):
+    """Append an audit entry to the schedule in-memory object."""
+    if schedule is None:
+        return
+    log = schedule.get("audit_log")
+    if not isinstance(log, list):
+        log = []
+        schedule["audit_log"] = log
+    entry = {
+        "ts": int(time.time()),
+        "action": action,
+        "description": description,
+        "actor_id": (actor or {}).get("id"),
+        "actor_email": (actor or {}).get("email"),
+        "actor_name": (actor or {}).get("name"),
+        "meta": meta or {},
+    }
+    log.append(entry)
+    if len(log) > AUDIT_LOG_LIMIT:
+        # Keep most recent entries
+        schedule["audit_log"] = log[-AUDIT_LOG_LIMIT:]
+
+
+def audit_entries_since(schedule: dict, since_ts: Optional[int]) -> List[dict]:
+    if not schedule or not isinstance(schedule.get("audit_log"), list):
+        return []
+    if since_ts is None:
+        return schedule.get("audit_log", [])
+    return [e for e in schedule.get("audit_log", []) if e.get("ts") and e.get("ts") > since_ts]
+
+
+# ----------------------------
+# Email notifications (Brevo)
+# ----------------------------
+def brevo_send_email(to_emails: List[str], subject: str, html_body: str, text_body: Optional[str] = None, bcc_mode: bool = True) -> bool:
+    """Send an email via Brevo's transactional API. Returns True on success."""
+    if not BREVO_API_KEY:
+        print("[BREVO] Missing BREVO_API_KEY; skipping email send")
+        return False
+    if not to_emails:
+        print("[BREVO] No recipients provided; skipping email send")
+        return False
+
+    unique_recipients = sorted({e.strip() for e in to_emails if e and "@" in e})
+    if not unique_recipients:
+        print("[BREVO] No valid recipient emails after filtering")
+        return False
+
+    if bcc_mode:
+        # Use a single primary "To" and blind-copy all actual recipients
+        primary_to = BREVO_PRIMARY_TO if (BREVO_PRIMARY_TO and "@" in BREVO_PRIMARY_TO) else None
+        if not primary_to:
+            primary_to = unique_recipients[0]
+
+        bcc_list = [e for e in unique_recipients if e != primary_to]
+        payload = {
+            "sender": {"email": BREVO_FROM_EMAIL, "name": BREVO_FROM_NAME},
+            "to": [{"email": primary_to}],
+            "bcc": ([{"email": e} for e in bcc_list] if bcc_list else []),
+            "subject": subject,
+            "htmlContent": html_body,
+            "textContent": text_body or re.sub(r"<[^>]+>", "", html_body),
+        }
+    else:
+        payload = {
+            "sender": {"email": BREVO_FROM_EMAIL, "name": BREVO_FROM_NAME},
+            "to": [{"email": e} for e in unique_recipients],
+            "subject": subject,
+            "htmlContent": html_body,
+            "textContent": text_body or re.sub(r"<[^>]+>", "", html_body),
+        }
+
+    headers = {
+        "accept": "application/json",
+        "api-key": BREVO_API_KEY,
+        "content-type": "application/json",
+    }
+
+    try:
+        resp = requests.post("https://api.brevo.com/v3/smtp/email", json=payload, headers=headers, timeout=10)
+        if resp.status_code >= 300:
+            print(f"[BREVO] Send failed ({resp.status_code}): {resp.text}")
+            return False
+        try:
+            body = resp.json()
+        except Exception:
+            body = {}
+        msg_id = body.get("messageId") or body.get("messageIds")
+        if bcc_mode:
+            print(f"[BREVO] Sent to {payload['to'][0]['email']} (bcc {len(payload.get('bcc') or [])}); messageId={msg_id}")
+        else:
+            print(f"[BREVO] Sent to {unique_recipients}; messageId={msg_id}")
+        return True
+    except Exception as exc:
+        print(f"[BREVO] Exception sending email: {exc}")
+        return False
+
+
+def get_member_recipients(
+    ensemble_id: str,
+    exclude_user_id: Optional[str] = None,
+    include_actor: bool = False,
+) -> List[dict]:
+    """Return recipient dicts for ensemble members (active or pending)."""
+    memberships = load_memberships()
+    users_by_id = {u.get("id"): u for u in load_users()}
+    recipients = []
+    for m in memberships:
+        if m.get("ensemble_id") != ensemble_id:
+            continue
+        if m.get("status", "active") not in {"active", "pending"}:
+            continue
+        uid = m.get("user_id")
+        if not include_actor and exclude_user_id and uid == exclude_user_id:
+            continue
+        user = users_by_id.get(uid) or {}
+        email = user.get("email")
+        if email and "@" in email:
+            recipients.append({
+                "user_id": uid,
+                "email": email.strip(),
+                "name": user_display_name(user),
+                "first_name": user.get("first_name"),
+                "last_name": user.get("last_name"),
+                "instrument": user.get("instrument"),
+                "status": m.get("status", "active"),
+            })
+    # Deduplicate by email
+    seen = set()
+    unique = []
+    for r in recipients:
+        if r["email"] in seen:
+            continue
+        seen.add(r["email"])
+        unique.append(r)
+    return unique
+
+
+def _default_notification_subject(ensemble_name: str) -> str:
+    return f"Rehearsal schedule updates for {ensemble_name}"
+
+
+def _default_notification_body(ensemble_name: str) -> str:
+    return f"There have been some updates to a rehearsal schedule for {ensemble_name}:"
+
+
+_ALLOWED_MSG_TAGS = {"b", "strong", "i", "em", "u", "br", "ul", "ol", "li", "p"}
+
+
+def _sanitize_message_html(raw: str) -> str:
+    """Escape HTML but allow a tiny safe subset of tags for formatting."""
+    escaped = html.escape(raw or "")
+    for tag in _ALLOWED_MSG_TAGS:
+        escaped = escaped.replace(f"&lt;{tag}&gt;", f"<{tag}>")
+        escaped = escaped.replace(f"&lt;/{tag}&gt;", f"</{tag}>")
+        escaped = escaped.replace(f"&lt;{tag}/&gt;", f"<{tag}/>" )
+    return escaped
+
+
+def _html_to_plain_text(msg_html: str) -> str:
+    txt = msg_html
+    txt = re.sub(r"<br\s*/?>", "\n", txt, flags=re.I)
+    txt = re.sub(r"</p>", "\n\n", txt, flags=re.I)
+    txt = re.sub(r"</li>", "\n", txt, flags=re.I)
+    txt = re.sub(r"</(ul|ol)>", "\n", txt, flags=re.I)
+    txt = re.sub(r"<[^>]+>", "", txt)
+    # Collapse excessive newlines
+    txt = re.sub(r"\n{3,}", "\n\n", txt)
+    return txt.strip()
+
+
+def notify_schedule_update(schedule: dict, description: str, actor: Optional[dict] = None, recipients_override: Optional[List[str]] = None, subject_override: Optional[str] = None):
+    """Notify ensemble members that a schedule has changed. Returns (sent:boolean, recipients:list, error:str|None)."""
+    if not schedule:
+        return False, [], "No schedule provided"
+
+    ensemble_id = schedule.get("ensemble_id")
+    ensemble = get_ensemble_by_id(ensemble_id)
+    ensemble_name = (ensemble or {}).get("name", ensemble_id or "Schedule")
+    schedule_id = schedule.get("id")
+
+    users_by_email = {normalize_email(u.get("email")): u for u in load_users()}
+
+    if recipients_override:
+        recipients_info = []
+        for addr in recipients_override:
+            if addr and "@" in addr:
+                norm = normalize_email(addr)
+                u = users_by_email.get(norm) or {}
+                recipients_info.append({
+                    "email": addr.strip(),
+                    "name": user_display_name(u),
+                    "first_name": u.get("first_name"),
+                    "last_name": u.get("last_name"),
+                    "instrument": u.get("instrument"),
+                })
+    else:
+        recipients_info = get_member_recipients(
+            ensemble_id,
+            exclude_user_id=(actor or {}).get("id") if actor else None,
+            include_actor=False,
+        )
+        if (not recipients_info) and actor:
+            recipients_info = get_member_recipients(ensemble_id, exclude_user_id=None, include_actor=True)
+
+    if not recipients_info:
+        msg = f"No recipients for ensemble {ensemble_id}"
+        print(f"[BREVO] {msg}; skipping notification")
+        return False, [], msg
+
+    schedule_link = url_for("schedule_view", schedule_id=schedule_id, _external=True)
+    base_message = (description or _default_notification_body(ensemble_name)).strip()
+    safe_message = _sanitize_message_html(base_message.replace("\r\n", "\n")).replace("\n", "<br>")
+    subject = (subject_override or _default_notification_subject(ensemble_name) or "").strip() or _default_notification_subject(ensemble_name)
+
+    # Detect if the user already included link or sign-off to avoid duplicates
+    include_link_paragraph = schedule_link not in base_message
+    include_signoff = not re.search(r"best wishes", base_message, flags=re.IGNORECASE)
+
+    # Gather changes since last notification
+    changes = audit_entries_since(schedule, schedule.get("last_notified_at"))
+    def format_change(entry: dict) -> str:
+        actor_label = entry.get("actor_name") or entry.get("actor_email") or ""
+        actor_txt = f" — {html.escape(actor_label)}" if actor_label else ""
+        return f"<li><strong>{html.escape(entry.get('action',''))}</strong>: {html.escape(entry.get('description',''))}{actor_txt}</li>"
+    changes_html = "".join(format_change(e) for e in changes[:10])
+    if len(changes) > 10:
+        changes_html += f"<li>…and {len(changes)-10} more</li>"
+
+    success_count = 0
+    failed_count = 0
+    for r in recipients_info:
+        first_name = r.get("first_name") or (r.get("name") or "").split(" ")[0] or r.get("email") or "there"
+        greeting = html.escape(first_name)
+
+        body_parts = [
+            f"<p>Hi {greeting},</p>",
+            f"<p>{safe_message}</p>",
+        ]
+        if changes_html:
+            body_parts.append("<p>Updates:</p><ul>" + changes_html + "</ul>")
+        else:
+            body_parts.append("<p>Updates were made, but there are no detailed items to show.</p>")
+        if include_link_paragraph:
+            body_parts.append(f"<p>Check out the rehearsal schedule <a href='{schedule_link}'>here</a>.</p>")
+        if include_signoff:
+            body_parts.append("<p>Best wishes,</p>")
+            body_parts.append("<p>Jack</p>")
+        html_body = "\n".join(body_parts)
+
+        text_greeting = first_name or r.get('email') or 'there'
+        plain_message = _html_to_plain_text(safe_message)
+
+        text_lines = [
+            f"Hi {text_greeting},",
+            "",
+            plain_message,
+        ]
+        if changes:
+            for e in changes[:10]:
+                actor_label = e.get("actor_name") or e.get("actor_email") or ""
+                actor_txt = f" — {actor_label}" if actor_label else ""
+                text_lines.append(f"- {e.get('action')}: {e.get('description')}{actor_txt}")
+            if len(changes) > 10:
+                text_lines.append(f"…and {len(changes)-10} more")
+        else:
+            text_lines.append("- Updates were made, but there are no detailed items to show.")
+        text_lines.append("")
+        if include_link_paragraph:
+            text_lines.append(f"Check out the rehearsal schedule here: {schedule_link}")
+            text_lines.append("")
+        if include_signoff:
+            text_lines.append("Best wishes,")
+            text_lines.append("Jack")
+        text_body = "\n".join(text_lines)
+
+        sent = brevo_send_email([r["email"]], subject, html_body, text_body, bcc_mode=False)
+        if sent:
+            success_count += 1
+        else:
+            failed_count += 1
+
+    if success_count == 0:
+        if not BREVO_API_KEY:
+            return False, [r["email"] for r in recipients_info], "Email disabled (missing BREVO_API_KEY)"
+        return False, [r["email"] for r in recipients_info], "Email send failed"
+
+    # Update notification timestamp and audit log
+    schedule["last_notified_at"] = int(time.time())
+    add_audit_entry(
+        schedule,
+        action="notification_sent",
+        description=f"Sent update to {success_count} recipient(s)",
+        actor=actor,
+        meta={"success": success_count, "failed": failed_count, "subject": subject},
+    )
+    save_schedule(schedule)
+
+    return True, [r["email"] for r in recipients_info], None
+
+
 def is_member(user_id: str, ensemble_id: str) -> bool:
     mem = load_memberships()
     return any(
@@ -901,6 +1241,13 @@ def ensemble_member_required_or_403(ensemble_id: str):
 
 def normalize_email(s: str) -> str:
     return (s or "").strip().lower()
+
+
+def user_display_name(user: dict) -> str:
+    first = (user or {}).get("first_name") or ""
+    last = (user or {}).get("last_name") or ""
+    name = (f"{first} {last}".strip()) or user.get("name") or user.get("email") or ""
+    return name
 
 def slugify_id(name: str) -> str:
     s = re.sub(r"[^a-zA-Z0-9]+", "-", (name or "").strip().lower()).strip("-")
@@ -2087,6 +2434,8 @@ def api_schedule_import_csv(schedule_id):
     r = admin_required_or_403()
     if r: return r
 
+    actor = current_user()
+
     kind = (request.args.get("kind") or "").lower()
     if kind not in {"works", "rehearsals"}:
         return jsonify({"ok": False, "error": "kind must be works or rehearsals"}), 400
@@ -2125,6 +2474,7 @@ def api_schedule_import_csv(schedule_id):
     s["schedule"] = []
     s["timed"] = []
     s["updated_at"] = int(time.time())
+    add_audit_entry(s, action="import_csv", description=f"Imported {kind} table", actor=actor, meta={"kind": kind})
     save_schedule(s)
 
     return jsonify({"ok": True})
@@ -2139,6 +2489,8 @@ def api_delete_rehearsal(schedule_id, rehearsal_num):
     """
     r = admin_required_or_403()
     if r: return r
+
+    actor = current_user()
 
     s = load_schedule(schedule_id)
     if not s: abort(404)
@@ -2183,6 +2535,7 @@ def api_delete_rehearsal(schedule_id, rehearsal_num):
         save_concerts(concerts)
 
     s["updated_at"] = int(time.time())
+    add_audit_entry(s, action="delete_rehearsal", description=f"Deleted rehearsal {rehearsal_num}", actor=actor)
     save_schedule(s)
 
     return jsonify({"ok": True, "concerts_deleted": len(concert_ids_to_delete)})
@@ -2200,6 +2553,8 @@ def api_timed_edit(schedule_id):
     """
     r = admin_required_or_403()
     if r: return r
+
+    actor = current_user()
 
     s = load_schedule(schedule_id)
     if not s: abort(404)
@@ -2331,7 +2686,75 @@ def api_timed_edit(schedule_id):
     print(f"  Updated allocation: {len(s.get('allocation', []))} rows")
     print(f"  Updated schedule with new durations: {len(s.get('schedule', []))} rows (preserved metadata)")
 
-    return jsonify({"ok": True, "history_len": len(s.get("timed_history", []))})
+    # Optional email notification (opt-in to avoid noise)
+    notified = False
+    recipient_count = 0
+    error = None
+    if data.get("notify"):
+        notified, recipients, error = notify_schedule_update(
+            s,
+            description,
+            actor=actor,
+            recipients_override=data.get("recipients") if isinstance(data.get("recipients"), list) else None,
+        )
+        recipient_count = len(recipients)
+
+    return jsonify({
+        "ok": True,
+        "history_len": len(s.get("timed_history", [])),
+        "notified": bool(notified),
+        "recipient_count": recipient_count,
+        "error": error,
+    })
+
+
+@app.route("/api/s/<schedule_id>/notify_update", methods=["GET", "POST"])
+def api_notify_update(schedule_id):
+    """Manually trigger a schedule update notification without changing data."""
+    r = admin_required_or_403()
+    if r: return r
+
+    s = load_schedule(schedule_id)
+    if not s: abort(404)
+
+    if s.get("status") != "published":
+        return jsonify({"ok": False, "error": "Schedule is not published"}), 400
+
+    # Provide recipient list for UI selection
+    recipients = get_member_recipients(s.get("ensemble_id"), exclude_user_id=None, include_actor=True)
+    if request.method == "GET":
+        ensemble_name = (get_ensemble_by_id(s.get("ensemble_id")) or {}).get("name", s.get("ensemble_id") or "Schedule")
+        schedule_link = url_for("schedule_view", schedule_id=schedule_id, _external=True)
+        default_body = (
+            f"There have been some updates to a rehearsal schedule for {ensemble_name}:\n\n"
+            "Best wishes,\nJack"
+        )
+
+        return jsonify({
+            "ok": True,
+            "recipients": recipients,
+            "default_subject": _default_notification_subject(ensemble_name),
+            "default_body": default_body,
+            "schedule_link": schedule_link,
+        })
+
+    data = request.get_json() or {}
+    actor = current_user()
+
+    ensemble_name = (get_ensemble_by_id(s.get("ensemble_id")) or {}).get("name", s.get("ensemble_id") or "Schedule")
+    subject = (data.get("subject") or "").strip() or _default_notification_subject(ensemble_name)
+    body_message = (data.get("body") or data.get("description") or "").strip() or _default_notification_body(ensemble_name)
+
+    recipients_override = data.get("recipients") if isinstance(data.get("recipients"), list) else None
+
+    notified, recipients, error = notify_schedule_update(
+        s,
+        body_message,
+        actor=actor,
+        recipients_override=recipients_override,
+        subject_override=subject,
+    )
+    return jsonify({"ok": True, "notified": bool(notified), "recipient_count": len(recipients), "recipients": recipients, "error": error})
 
 
 @app.post("/api/s/<schedule_id>/timed_revert")
@@ -2418,6 +2841,7 @@ def api_update_section(schedule_id, rehearsal_num):
     
     s["timed"] = timed
     s["updated_at"] = int(time.time())
+    add_audit_entry(s, action="rehearsal_section", description=f"Section set to {section}", actor=current_user(), meta={"rehearsal": rehearsal_num})
     save_schedule(s)
     
     return jsonify({"ok": True, "section": section})
@@ -2452,6 +2876,7 @@ def api_update_rehearsal_event_type(schedule_id, rehearsal_num):
     s["rehearsals"] = rehearsals
     s["timed"] = timed
     s["updated_at"] = int(time.time())
+    add_audit_entry(s, action="rehearsal_event_type", description=f"Event type set to {event_type}", actor=current_user(), meta={"rehearsal": rehearsal_num, "section": section})
     save_schedule(s)
     
     return jsonify({"ok": True, "event_type": event_type, "section": section})
@@ -2693,6 +3118,7 @@ def api_update_rehearsal(schedule_id, rehearsal_num):
     s["timed"] = clean_timed_data(timed_data)
     
     s["updated_at"] = int(time.time())
+    add_audit_entry(s, action="rehearsal_update", description=f"Rehearsal {rehearsal_num} updated", actor=current_user(), meta={"rehearsal": rehearsal_num, "fields": list(data.keys())})
     save_schedule(s)
     
     return jsonify({"ok": True, "rehearsal": rehearsal_num, "updated": data})
@@ -2929,10 +3355,33 @@ def admin_set_schedule_status(schedule_id):
     if status not in {"draft", "published"}:
         abort(400)
 
+    notify_publish = request.form.get("notify_publish") in {"on", "true", "1"}
+
     s["status"] = status
     s["updated_at"] = int(time.time())
+    add_audit_entry(s, action="status_change", description=f"Status set to {status}", actor=current_user())
     save_schedule(s)
+
+    if status == "published" and notify_publish:
+        actor = current_user()
+        desc = f"{s.get('name', 'Schedule')} published"
+        notify_schedule_update(s, desc, actor=actor)
+
     return redirect(url_for("admin_edit_schedule", schedule_id=schedule_id))
+
+
+@app.get("/admin/s/<schedule_id>/audit")
+def admin_schedule_audit(schedule_id):
+    r = admin_required_or_403()
+    if r: return r
+
+    s = load_schedule(schedule_id)
+    if not s:
+        abort(404)
+
+    ensemble = get_ensemble_by_id(s.get("ensemble_id"))
+    log = sorted(s.get("audit_log", []), key=lambda e: e.get("ts", 0), reverse=True)
+    return render_template("admin_audit.html", schedule=s, audit_log=log, ensemble=ensemble)
 
 
 @app.get("/admin")
@@ -3075,6 +3524,59 @@ def admin_set_admin(user_id):
 
     val = request.form.get("is_admin") == "true"
     set_user_admin_flag(user_id, val)
+    return redirect(url_for("admin_home"))
+
+
+@app.post("/admin/users/<user_id>/update_profile")
+def admin_update_user_profile(user_id):
+    r = admin_required_or_403()
+    if r: return r
+
+    users = load_users()
+    u = next((x for x in users if x.get("id") == user_id), None)
+    if not u:
+        abort(404)
+
+    new_email = (request.form.get("email") or u.get("email") or "").strip().lower()
+    first_name = (request.form.get("first_name") or u.get("first_name") or "").strip()
+    last_name = (request.form.get("last_name") or u.get("last_name") or "").strip()
+    instrument = (request.form.get("instrument") or u.get("instrument") or "").strip()
+    is_admin_flag = (request.form.get("is_admin") or "false").lower() in {"true", "1", "on"}
+
+    if not new_email:
+        abort(400)
+
+    # Ensure unique email
+    if any(other for other in users if other.get("id") != user_id and (other.get("email") or "").lower() == new_email):
+        ensembles = load_ensembles()
+        mem = load_memberships()
+        mem_by_user = {}
+        ens_by_id = {e["id"]: e for e in ensembles}
+        for m in mem:
+            mem_by_user.setdefault(m.get("user_id"), []).append(m)
+        return render_template(
+            "admin_home.html",
+            error="Email already in use",
+            users=users,
+            ensembles=ensembles,
+            mem=mem,
+            ens_by_id=ens_by_id,
+            mem_by_user=mem_by_user,
+            user=current_user(),
+        ), 400
+
+    u["email"] = new_email
+    u["first_name"] = first_name
+    u["last_name"] = last_name
+    u["instrument"] = instrument
+    u["name"] = user_display_name(u)
+    u["is_admin"] = is_admin_flag
+
+    ensure_admin_if_matches_email(u)
+    if u.get("is_admin") != is_admin_flag:
+        set_user_admin_flag(user_id, is_admin_flag)
+    save_users(users)
+
     return redirect(url_for("admin_home"))
 
 @app.post("/admin/memberships/upsert")
@@ -3298,11 +3800,14 @@ def register_view():
 @app.post("/register")
 def register_post():
     email = (request.form.get("email") or "").strip().lower()
+    first_name = (request.form.get("first_name") or "").strip()
+    last_name = (request.form.get("last_name") or "").strip()
+    instrument = (request.form.get("instrument") or "").strip()
     password = request.form.get("password") or ""
     ensemble_id = (request.form.get("ensemble_id") or "").strip()
     invite_code = (request.form.get("invite_code") or "").strip()
 
-    if not email or not password:
+    if not email or not password or not first_name or not last_name:
         abort(400)
 
     users = load_users()
@@ -3332,9 +3837,14 @@ def register_post():
         return render_template("register.html", ensembles=load_ensembles(), error="Please select an ensemble or use a valid invitation code."), 400
 
     uid = uuid.uuid4().hex
+    display_name = f"{first_name} {last_name}".strip()
     users.append({
         "id": uid,
         "email": email,
+        "first_name": first_name,
+        "last_name": last_name,
+        "name": display_name,
+        "instrument": instrument,
         "password_hash": generate_password_hash(password),
         "is_admin": False,
         "created_at": int(time.time()),
@@ -5108,139 +5618,238 @@ def download_my_schedule_pdf():
     if not events_list:
         return "No rehearsals found", 404
 
-    # Create PDF
+    # Create PDF aligned with schedule view styling (title page, serif fonts, footer)
     from io import BytesIO
     from reportlab.lib import colors
     from reportlab.lib.pagesizes import A4
     from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
     from reportlab.lib.units import cm
-    from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
-    from reportlab.lib.enums import TA_CENTER, TA_LEFT
+    from reportlab.platypus import (
+        SimpleDocTemplate,
+        Table,
+        TableStyle,
+        Paragraph,
+        Spacer,
+        PageBreak,
+        KeepTogether,
+    )
+    from reportlab.lib.enums import TA_CENTER
+
+    base_font = 'Times-Roman'
+    base_font_bold = 'Times-Bold'
 
     buffer = BytesIO()
-    doc = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=1.5*cm, leftMargin=1.5*cm, 
-                           topMargin=2*cm, bottomMargin=1.5*cm)
-    
-    styles = getSampleStyleSheet()
-    title_style = ParagraphStyle('Title', parent=styles['Heading1'], alignment=TA_CENTER, 
-                                 fontSize=18, spaceAfter=12)
-    heading_style = ParagraphStyle('Heading', parent=styles['Heading2'], fontSize=12, 
-                                   spaceAfter=6, spaceBefore=10)
-    
-    story = []
-    
-    # Title
-    story.append(Paragraph("My Rehearsal Schedule", title_style))
-    story.append(Paragraph(f"{u.get('email', 'Member')}", ParagraphStyle('Subtitle', parent=styles['Normal'], 
-                                                                          alignment=TA_CENTER, fontSize=11, textColor=colors.grey)))
-    story.append(Spacer(1, 0.5*cm))
-    
-    # Group by date for summary
-    current_date = None
-    for ev in events_list:
-        date_obj = ev.get("date")
 
-        # Skip if date is NaT (safety check)
+    def draw_footer(canvas_obj, doc_obj):
+        canvas_obj.saveState()
+        canvas_obj.setFont(base_font, 9)
+        footer_y = 1.8 * cm
+        canvas_obj.setFillColor(colors.HexColor('#374151'))
+
+        logo_path = os.path.join(os.path.dirname(__file__), 'static', 'logo.png')
+        logo_drawn = False
+        if os.path.exists(logo_path):
+            try:
+                canvas_obj.drawImage(logo_path, 1.5 * cm, footer_y - 0.2 * cm, width=2.5 * cm, height=1.5 * cm, preserveAspectRatio=True, mask='auto')
+                logo_drawn = True
+            except Exception as e:
+                print(f'Could not load logo: {e}')
+                pass
+
+        contact_x = 4.5 * cm if logo_drawn else 1.5 * cm
+        canvas_obj.setFont(base_font_bold, 10)
+        canvas_obj.drawString(contact_x, footer_y + 0.8 * cm, 'Jack Capstaff')
+        canvas_obj.setFont(base_font, 8)
+        canvas_obj.drawString(contact_x, footer_y + 0.5 * cm, 'M: 07805 165842  |  W: jackcapstaff.com')
+        canvas_obj.drawString(contact_x, footer_y + 0.2 * cm, 'E: jack@jackcapstaff.com')
+
+        canvas_obj.setFont(base_font, 9)
+        page_text = f'Page {doc_obj.page}'
+        canvas_obj.drawRightString(A4[0] - 1.5 * cm, footer_y + 0.5 * cm, page_text)
+        canvas_obj.restoreState()
+
+    doc = SimpleDocTemplate(
+        buffer,
+        pagesize=A4,
+        rightMargin=1.5 * cm,
+        leftMargin=1.5 * cm,
+        topMargin=2 * cm,
+        bottomMargin=3 * cm,
+    )
+
+    styles = getSampleStyleSheet()
+    title_page_style = ParagraphStyle('TitlePage', parent=styles['Heading1'], alignment=TA_CENTER,
+                                      fontSize=28, spaceAfter=22, fontName=base_font_bold, textColor=colors.HexColor('#1e40af'))
+    subtitle_style = ParagraphStyle('Subtitle', parent=styles['Heading2'], alignment=TA_CENTER,
+                                    fontSize=16, spaceAfter=10, fontName=base_font, textColor=colors.HexColor('#3b82f6'))
+    date_range_style = ParagraphStyle('DateRange', parent=styles['Normal'], alignment=TA_CENTER,
+                                      fontSize=12, spaceAfter=28, fontName=base_font, textColor=colors.HexColor('#6b7280'))
+    heading_style = ParagraphStyle('Heading', parent=styles['Heading2'], fontSize=14,
+                                   spaceAfter=8, spaceBefore=12, fontName=base_font_bold)
+    programme_style = ParagraphStyle('Programme', parent=styles['Normal'], fontSize=10,
+                                     fontName=base_font, leading=14, leftIndent=0)
+
+    story = []
+
+    story.append(Spacer(1, 6 * cm))
+    story.append(Paragraph("My Rehearsal Schedule", title_page_style))
+    story.append(Paragraph(u.get('email', 'Member'), subtitle_style))
+
+    all_dates = []
+    for ev in events_list:
+        d = ev.get('date')
+        if d is not None and not pd.isna(d):
+            try:
+                all_dates.append(pd.to_datetime(d))
+            except Exception:
+                pass
+    if all_dates:
+        dates_series = pd.Series(all_dates)
+        start_date = dates_series.min().strftime('%B %d, %Y')
+        end_date = dates_series.max().strftime('%B %d, %Y')
+        story.append(Paragraph(f"{start_date} — {end_date}", date_range_style))
+
+    story.append(PageBreak())
+
+    for ev in events_list:
+        date_obj = ev.get('date')
         if pd.isna(date_obj):
             continue
+        date_obj = pd.to_datetime(date_obj)
+        day = date_obj.day
+        suffix = 'th'
+        if not (10 <= day % 100 <= 20):
+            suffix = {1: 'st', 2: 'nd', 3: 'rd'}.get(day % 10, 'th')
+        date_str = date_obj.strftime(f'%A {day}{suffix} %B, %Y')
 
-        # Date heading
-        if current_date is None or current_date.date() != date_obj.date():
-            current_date = date_obj
-            day = date_obj.day
-            if 10 <= day % 100 <= 20:
-                suffix = 'th'
-            else:
-                suffix = {1: 'st', 2: 'nd', 3: 'rd'}.get(day % 10, 'th')
-            date_str = date_obj.strftime(f'%A {day}{suffix} %B, %Y')
+        if ev.get('type') == 'concert':
+            concert = ev.get('concert', {})
+            concert_data = []
+            concert_title = concert.get('title', 'Concert')
 
-            story.append(Paragraph(date_str, heading_style))
+            concert_data.append([Paragraph(f"<b>{ev.get('ensemble_name', '')}</b> — 🎵 {concert_title}", styles['Normal'])])
+            concert_data.append([Paragraph(f"<b>Date:</b> {date_str}", styles['Normal'])])
+            concert_data.append([Paragraph(f"<b>Time:</b> {concert.get('time', 'TBA')}", styles['Normal'])])
+            if concert.get('venue'):
+                concert_data.append([Paragraph(f"<b>Venue:</b> {concert.get('venue')}", styles['Normal'])])
+            if concert.get('uniform'):
+                concert_data.append([Paragraph(f"<b>Uniform:</b> {concert.get('uniform')}", styles['Normal'])])
 
-        if ev.get("type") == "concert":
-            concert = ev.get("concert", {})
-            title = concert.get("title", "Concert")
-            time_str = concert.get("time") or "TBA"
-            venue = concert.get("venue")
-            uniform = concert.get("uniform")
-            programme = concert.get("programme")
-            other = concert.get("other_info") or concert.get("notes")
+            programme_text = concert.get('programme') or ""
+            if programme_text:
+                def parse_programme_sets(text: str):
+                    norm_text = text.replace('\r\n', '\n').replace('\r', '\n')
+                    lines = norm_text.split('\n')
+                    heading = re.compile(r'^\s*set\s+(\d+)\s*:?\s*(.*)$', re.IGNORECASE)
+                    sets = []
+                    current = None
+                    for line in lines:
+                        m = heading.match(line)
+                        if m:
+                            if current:
+                                sets.append(current)
+                            current = {'num': m.group(1), 'lines': []}
+                            inline = m.group(2)
+                            if inline:
+                                current['lines'].append(inline)
+                        else:
+                            if current is None:
+                                current = {'num': None, 'lines': []}
+                            current['lines'].append(line)
+                    if current:
+                        sets.append(current)
+                    return sets
 
-            story.append(Paragraph(f"<b>{ev.get('ensemble_name', '')}</b> - 🎵 {title}",
-                                   ParagraphStyle('ConcertHeading', parent=styles['Normal'], fontSize=11, leftIndent=0.5*cm, spaceAfter=4)))
+                sets = parse_programme_sets(programme_text)
+                has_numbered_sets = any(s.get('num') for s in sets)
 
-            table_data = [["Time", time_str]]
-            if venue:
-                table_data.append(["Venue", venue])
-            if uniform:
-                table_data.append(["Uniform", uniform])
-            if programme:
-                table_data.append(["Programme", programme])
-            if other:
-                table_data.append(["Notes", other])
+                def format_lines(lines):
+                    return '<br/>'.join([html.escape(line) for line in lines])
 
-            table = Table(table_data, colWidths=[3*cm, 12*cm])
-            table.setStyle(TableStyle([
+                if has_numbered_sets:
+                    from reportlab.platypus import Table as InnerTable
+                    set_cells = []
+                    for s in sets:
+                        set_num = s.get('num', '?')
+                        formatted_lines = format_lines(s.get('lines', []))
+                        set_cells.append(Paragraph(f"<b>Set {set_num}:</b><br/>{formatted_lines}", programme_style))
+
+                    sets_per_row = 2 if len(set_cells) > 1 else 1
+                    set_rows = []
+                    for i in range(0, len(set_cells), sets_per_row):
+                        set_rows.append(set_cells[i:i + sets_per_row])
+
+                    sets_table = InnerTable(set_rows, colWidths=[8 * cm] * (sets_per_row))
+                    sets_table.setStyle(TableStyle([
+                        ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+                        ('LEFTPADDING', (0, 0), (-1, -1), 6),
+                        ('RIGHTPADDING', (0, 0), (-1, -1), 6),
+                    ]))
+                    concert_data.append([sets_table])
+                else:
+                    formatted_lines = format_lines(sets[0].get('lines', [])) if sets else ""
+                    concert_data.append([Paragraph(f"<b>Programme:</b><br/>{formatted_lines}", programme_style)])
+            if concert.get('other_info'):
+                concert_data.append([Paragraph(f"<b>Notes:</b> {concert.get('other_info')}", styles['Normal'])])
+
+            concert_table = Table(concert_data, colWidths=[16 * cm])
+            concert_table.setStyle(TableStyle([
                 ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#dbeafe')),
-                ('TEXTCOLOR', (0, 0), (-1, 0), colors.HexColor('#1e3a8a')),
-                ('FONTNAME', (0, 0), (-1, 0), 'Times-Bold'),
-                ('GRID', (0, 0), (-1, -1), 0.5, colors.HexColor('#93c5fd')),
-                ('FONTNAME', (0, 1), (-1, -1), 'Times-Roman'),
-                ('FONTSIZE', (0, 0), (-1, -1), 9),
+                ('TEXTCOLOR', (0, 0), (-1, 0), colors.HexColor('#1e40af')),
                 ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
-                ('LEFTPADDING', (0, 0), (-1, -1), 4),
-                ('RIGHTPADDING', (0, 0), (-1, -1), 4),
+                ('FONTNAME', (0, 0), (-1, 0), base_font_bold),
+                ('FONTSIZE', (0, 0), (-1, 0), 12),
+                ('FONTNAME', (0, 1), (-1, -1), base_font),
+                ('FONTSIZE', (0, 1), (-1, -1), 10),
+                ('BOTTOMPADDING', (0, 0), (-1, -1), 8),
+                ('TOPPADDING', (0, 0), (-1, -1), 8),
+                ('GRID', (0, 0), (-1, -1), 1, colors.HexColor('#93c5fd')),
+                ('BOX', (0, 0), (-1, -1), 2, colors.HexColor('#3b82f6')),
             ]))
 
-            story.append(table)
-            story.append(Spacer(1, 0.3*cm))
+            story.append(KeepTogether([concert_table, Spacer(1, 0.5 * cm)]))
 
         else:
-            reh_info = f"<b>{ev['ensemble_name']}</b> - Rehearsal {ev['rehearsal_num']}"
-            if ev.get('section') and ev['section'] != 'Full Ensemble':
-                reh_info += f" ({ev['section']})"
-            story.append(Paragraph(reh_info,
-                                  ParagraphStyle('RehInfo', parent=styles['Normal'], fontSize=10, leftIndent=0.5*cm, spaceAfter=4)))
+            reh_num = ev.get('rehearsal_num')
+            section = ev.get('section')
+            reh_heading = f"<b>{ev.get('ensemble_name', '')}</b> — Rehearsal {reh_num} - {date_str}"
+            if section and section != 'Full Ensemble':
+                reh_heading += f" ({section})"
+
+            heading_para = Paragraph(reh_heading, heading_style)
 
             table_data = [['Time', 'Item']]
-            for item in ev['items']:
-                time_str = item.get("Time in Rehearsal", "")
-                title = item.get("Title", "")
+            for item in ev.get('items', []):
+                time_str = item.get('Time in Rehearsal', '')
+                title = item.get('Title', '')
                 table_data.append([time_str, title])
 
-            table = Table(table_data, colWidths=[3*cm, 12*cm])
-            
-            # Apply alternating row colors
+            table = Table(table_data, colWidths=[3 * cm, 12.5 * cm])
             table_style = [
-                ('BACKGROUND', (0, 0), (-1, 0), colors.lightgrey),
+                ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#e5e7eb')),
                 ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
-                ('FONTNAME', (0, 0), (-1, 0), 'Times-Bold'),
-                ('FONTSIZE', (0, 0), (-1, 0), 9),
+                ('FONTNAME', (0, 0), (-1, 0), base_font_bold),
+                ('FONTSIZE', (0, 0), (-1, 0), 10),
                 ('BOTTOMPADDING', (0, 0), (-1, 0), 6),
-                ('GRID', (0, 0), (-1, -1), 0.5, colors.grey),
-                ('FONTNAME', (0, 1), (-1, -1), 'Times-Roman'),
-                ('FONTSIZE', (0, 1), (-1, -1), 8),
+                ('GRID', (0, 0), (-1, -1), 0.5, colors.HexColor('#9ca3af')),
+                ('FONTNAME', (0, 1), (-1, -1), base_font),
+                ('FONTSIZE', (0, 1), (-1, -1), 9),
                 ('VALIGN', (0, 0), (-1, -1), 'TOP'),
                 ('LEFTPADDING', (0, 0), (-1, -1), 4),
                 ('RIGHTPADDING', (0, 0), (-1, -1), 4),
             ]
-            
-            # Add alternating row colors (light blue and white)
             for i in range(1, len(table_data)):
-                if i % 2 == 1:
-                    table_style.append(('BACKGROUND', (0, i), (-1, i), colors.HexColor('#dbeafe')))
-                else:
-                    table_style.append(('BACKGROUND', (0, i), (-1, i), colors.white))
-            
+                table_style.append(('BACKGROUND', (0, i), (-1, i), colors.HexColor('#f8fafc') if i % 2 == 1 else colors.white))
             table.setStyle(TableStyle(table_style))
 
-            story.append(table)
-            story.append(Spacer(1, 0.3*cm))
-    
-    # Build PDF
-    doc.build(story)
+            story.append(KeepTogether([heading_para, table, Spacer(1, 0.4 * cm)]))
+
+    doc.page = 0
+    doc.page_count = 0
+    doc.build(story, onFirstPage=lambda c, d: None, onLaterPages=draw_footer)
     buffer.seek(0)
-    
-    filename = f"My_Rehearsal_Schedule.pdf"
+
+    filename = "My_Rehearsal_Schedule.pdf"
     return send_file(buffer, as_attachment=True, download_name=filename, mimetype='application/pdf')
 
 

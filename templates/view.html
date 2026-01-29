@@ -33,6 +33,16 @@
       <div class="small">The editor needs to run allocation + generate schedule.</div>
     </div>
   {% else %}
+    <style>
+      .reh-past > h2 .accordion-button {
+        background: #f6f6f6;
+        color: #7a7a7a;
+      }
+      .reh-past {
+        border-color: #e5e5e5;
+        opacity: 0.92;
+      }
+    </style>
     
     <!-- Combined Timeline View (Concerts + Rehearsals) -->
     {% set timeline_items = [] %}
@@ -139,7 +149,7 @@
         
       {% else %}
       <!-- Regular Rehearsal Display -->
-      <div class="accordion-item" id="rehearsal-{{ reh_num }}">
+      <div class="accordion-item" id="rehearsal-{{ reh_num }}" data-reh-date="{{ rows[0].get('Date', '') }}" data-reh-type="rehearsal">
         <h2 class="accordion-header">
           <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" 
                   data-bs-target="#collapse-{{ reh_num }}" aria-expanded="false" 
@@ -234,9 +244,38 @@
     // Embed concerts data for modal editing
     const concertsData = {{ concerts|tojson }};
     
-    // Scroll to and expand specific rehearsal if ?reh= parameter is present
+    // Highlight past rehearsals and pick the next upcoming date
     const urlParams = new URLSearchParams(window.location.search);
     const rehNum = urlParams.get('reh');
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+
+    const normalizeDate = (dateStr) => {
+      if (!dateStr) return null;
+      const parsed = new Date(dateStr);
+      if (isNaN(parsed.getTime())) return null;
+      return new Date(parsed.getFullYear(), parsed.getMonth(), parsed.getDate());
+    };
+
+    const accordionItems = document.querySelectorAll('.accordion-item[data-reh-date]');
+    let nextUpcomingItem = null;
+
+    accordionItems.forEach((item) => {
+      const dateStr = item.dataset.rehDate;
+      const rehType = item.dataset.rehType || '';
+      const parsed = normalizeDate(dateStr);
+      if (!parsed) return;
+
+      if (parsed < today) {
+        item.classList.add('reh-past');
+      } else if (rehType === 'rehearsal') {
+        if (!nextUpcomingItem || parsed < nextUpcomingItem.date) {
+          nextUpcomingItem = { item, date: parsed };
+        }
+      }
+    });
+
+    // Scroll to and expand specific rehearsal if ?reh= parameter is present
     if (rehNum) {
       setTimeout(() => {
         const targetButton = document.getElementById('btn-rehearsal-' + rehNum);
@@ -244,20 +283,27 @@
         const targetAccordionItem = document.getElementById('rehearsal-' + rehNum);
         
         if (targetButton && targetCollapse && targetAccordionItem) {
-          // Expand the accordion item
           const bsCollapse = new bootstrap.Collapse(targetCollapse, { toggle: true });
-          
-          // Update button state
           targetButton.classList.remove('collapsed');
           targetButton.setAttribute('aria-expanded', 'true');
-          
-          // Scroll to the item with highlight
           targetAccordionItem.scrollIntoView({ behavior: 'smooth', block: 'start' });
           targetAccordionItem.style.boxShadow = '0 4px 20px rgba(13, 110, 253, 0.3)';
           targetAccordionItem.style.border = '2px solid #0d6efd';
           targetAccordionItem.style.borderRadius = '0.25rem';
         }
       }, 300);
+    } else if (nextUpcomingItem && nextUpcomingItem.item) {
+      // Auto-expand the next upcoming rehearsal when no explicit target is provided
+      const targetCollapse = nextUpcomingItem.item.querySelector('.accordion-collapse');
+      const targetButton = nextUpcomingItem.item.querySelector('.accordion-button');
+      if (targetCollapse && targetButton) {
+        setTimeout(() => {
+          const bsCollapse = new bootstrap.Collapse(targetCollapse, { toggle: true });
+          targetButton.classList.remove('collapsed');
+          targetButton.setAttribute('aria-expanded', 'true');
+          nextUpcomingItem.item.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }, 300);
+      }
     }
     
     // Update event type and section for a rehearsal

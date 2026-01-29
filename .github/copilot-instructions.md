@@ -1,123 +1,41 @@
-# Rehearsal Schedule Web - Copilot Instructions
+# Rehearsal Schedule Web — Copilot Instructions
 
-## Architecture Overview
+**Purpose**: Flask app that allocates musical works to rehearsals, orders them, assigns timings, and lets admins edit timelines; members view published schedules and export PDFs.
 
-**Rehearsal Schedule Web** is a Flask-based scheduling application for orchestras/ensembles. It combines three external compute scripts (1-3) with a web UI to allocate musical works across rehearsals, generate time-based schedules, and allow interactive timeline editing.
+**Core components**
+- [app.py](app.py): routes, auth, schedule CRUD, compute triggers, timeline/history, PDF export, invitations; relies on JSON files in [site/data/](site/data/).
+- [core.py](core.py): time parsing (`minutes_from_timecell`), rehearsal/work prep, bundle/order logic; dynamically loads external scripts [1-Import-Time_per_work_per_rehearsal.py](1-Import-Time_per_work_per_rehearsal.py), [2-Orchestration_organisation.py](2-Orchestration_organisation.py), [3-Organised_rehearsal_with_time.py](3-Organised_rehearsal_with_time.py) (restart app after changes). Optional [4 - Final Compile and PDF.py](4%20-%20Final%20Compile%20and%20PDF.py) for XLSX compatibility.
+- UI: templates in [templates/](templates/) (admin, edit, view, member dashboard); client JS in [static/](static/) (timeline drag/swap in `editor.js`, older timeline in [static/Retired/timeline_new.js](static/Retired/timeline_new.js)).
 
-### Data Flow
-1. **Input**: Works table (Title, Duration, Difficulty, instrument demands) + Rehearsals table (Dates, times, breaks)
-2. **Allocation** (Script 1-2): Distribute works across rehearsals, respecting capacities and constraints
-3. **Scheduling** (Script 3): Order works within rehearsals by player load and orchestration similarity
-4. **Timing**: Compute exact start times with break placement
-5. **Timeline Editor**: Web UI for drag-to-reorder, swap, and undo
+**Data model and storage**
+- Schedules are individual JSON files in [site/data/schedules/](site/data/schedules/) with shape:
+  - `id`, `ensemble_id`, `name`, `status`, `G` (grid minutes), `works`, `rehearsals`, `allocation`, `schedule`, `timed`, `timed_history`, `audit_log`, `last_notified_at`, `generated_at`.
+  - Column order persisted via `works_cols` / `rehearsals_cols`; `G` defaults to `G_MINUTES` env (5).
+- `default_schedule_id.txt` points at the active schedule; legacy `project.json` is auto-migrated.
+- Auth data in [site/data/users.json](site/data/users.json), ensembles/memberships/invitations alongside.
 
-### Multi-Tenant Model
-- **Ensembles**: Independent orchestras (via user membership)
-- **Schedules**: Per-ensemble (not global project.json)
-- **Users**: Auth with roles (admin, member)
-- **Memberships**: Link users to ensembles (active/pending)
+**Persistence rules**
+- Always read via `read_json()` and write via `write_json_atomic()` to avoid corruption; JSON serialization uses `_json_safe` to handle pandas/numpy types.
+- When mutating rehearsals, keep helper fixes: `ensure_include_in_allocation_column`, `ensure_section_column`, `ensure_event_type_column`, `normalize_section_column`, `sanitize_df_records`, `clean_timed_data`.
+- `make_new_schedule()` seeds audit/log/timed_history fields; `add_audit_entry` snapshots timeline edits (last 50 kept).
 
-## Key Files & Responsibilities
+**Compute pipeline**
+- Upload/import works + rehearsals → `prepare_works_df`/`prepare_rehearsals_df` normalize rows (durations, truthy flags, start/end times, break minutes, section defaults) → external scripts compute allocation/player load/grouping → `generate_schedule` orders bundles by player load + orchestration similarity → `generate_timed_schedule` assigns concrete times.
+- Timeline edits: PUT `/api/s/<id>/timed_edit` sends full `timed` array + action description; server snapshots to `timed_history`, cleans sections, and writes JSON atomically. No multi-editor conflict handling (last write wins).
 
-| File | Purpose |
-|------|---------|
-| [app.py](app.py) | Flask app (2395 lines): Auth, schedules, timed edits, compute APIs |
-| [core.py](core.py) | Time parsing, utility functions (used during compute) |
-| [1-3 Scripts](.) | External modules (loaded dynamically): allocate, group, orchestrate |
-| [site/data/](site/data/) | Persistent JSON: users, ensembles, memberships, schedules |
-| [templates/](templates/) | Jinja2 HTML (member_dashboard, edit, view, admin_home) |
-| [static/](static/) | JS (timeline_new.js for drag/swap/grid), CSS |
+**Auth/roles and membership**
+- Roles: admins manage schedules, ensembles, invitations; members view published schedules for ensembles they belong to.
+- `ADMIN_EMAIL` auto-promotes on first login. Members can be pending; admins invite via `/admin/ensembles/<id>/invitations` (codes stored in invitations.json, can disable/expire).
+- Published schedules are visible to members; drafts only to admins. `/my` shows member calendar and can export PDF via ReportLab.
 
-## Critical Patterns
+**Notifications/Email**
+- Brevo SMTP/API optional (`BREVO_*` env). Audit log cap via `AUDIT_LOG_LIMIT`. If PDF or email features change, check member-facing routes near the bottom of [app.py](app.py).
 
-### 1. Schedule as JSON Document
-Each schedule (schedules/<id>.json) is a complete snapshot:
-```python
-{
-  "id": "sched_...",
-  "ensemble_id": "...",
-  "works": [...],  # raw table rows
-  "rehearsals": [...],  # raw table rows
-  "works_cols", "rehearsals_cols": [...],  # column order (persists schema)
-  "allocation": [...],  # output from Script 1-2
-  "schedule": [...],  # output from Script 3
-  "timed": [...],  # final timing with start times
-  "timed_history": [{"timestamp", "action", "description", "timed"}],  # undo snapshots
-  "G": 5  # grid granularity in minutes
-}
-```
+**Running locally**
+- Env hints: `DATA_DIR`, `SECRET_KEY`, `EDIT_TOKEN` (admin auth token for API endpoints), `ADMIN_EMAIL`, `G_MINUTES`, `BREVO_*`, `PROJECT_FILE` (legacy), `PORT`.
+- Start dev server: `EDIT_TOKEN=... flask --app app run --debug` (or `python app.py`); `use_reloader=False` avoids watcher overload. Data persists under DATA_DIR; ensure schedules dir exists.
 
-### 2. Atomic JSON Writes
-**Always use `write_json_atomic()`** to prevent corruption on crash:
-```python
-def write_json_atomic(path, data):
-    tmp = f"{path}.tmp.{uuid.uuid4().hex}"
-    with open(tmp, "w") as f:
-        json.dump(data, f, ...)
-    os.replace(tmp, path)  # atomic swap
-```
-
-### 3. Dynamic Script Loading
-Scripts 1-3 are loaded once at startup via `importlib.util`:
-```python
-mod1 = load_module_from_path("script1", SCRIPT1)  # normalise_works_columns, compute_required_minutes, etc.
-mod2 = load_module_from_path("script2", SCRIPT2)  # gather_resolved_groups, estimate_player_load, parse_group_and_movement
-mod3 = load_module_from_path("script3", SCRIPT3)  # signature_for_work, transition_cost, etc.
-```
-If scripts change, they must be reloaded (restart the app).
-
-### 4. Time Parsing Flexibility
-`minutes_from_timecell()` handles: "19:00", "7:00 PM", 1900, 1.0 (0-1 fraction), pandas Timestamp, etc. Used for both `Start Time` and `End Time` columns.
-
-### 5. Bundle Ordering Algorithm
-Works are grouped by **GroupKey** (inferred from title) and ordered by:
-1. **Descending player load** (hardest pieces first)
-2. **Orchestration similarity** (minimize instrument setup changes via `transition_cost`)
-3. **Break placement** (favors longer first half)
-
-### 6. Timeline Editor with History
-- Client drags blocks, sends full updated `timed` array + action description
-- `/api/s/<id>/timed_edit` (PUT) saves snapshot to `timed_history` before updating
-- Reverting restores a historical version; last 50 kept
-- **No conflict resolution**: Last-write-wins (single-editor assumption)
-
-## Auth & Permission Model
-
-| Endpoint | Admin? | Member? | Published? |
-|----------|--------|---------|------------|
-| POST /admin/* | ✓ | ✗ | N/A |
-| GET /admin | ✓ | ✗ | N/A |
-| GET /s/<id> (view) | ✓ | ✓ (if published) | Required for members |
-| PUT /api/s/<id>/timed_edit | ✓ | ✗ | N/A |
-| GET /api/member/rehearsals | ✓ | ✓ | N/A |
-| GET /register, /login | Anyone | | N/A |
-
-- `ADMIN_EMAIL` env var: Auto-promote user to admin if email matches
-- Memberships can be pending (not yet added to ensemble)
-
-## Common Workflows
-
-### Adding a New Compute Feature
-1. Modify Script 1-3 code (external files)
-2. Update `prepare_works_for_allocator()` or `prepare_rehearsals_for_allocator()` if input shape changes
-3. Call function in new API endpoint; save result to schedule dict
-4. Restart Flask to reload script modules
-
-### Fixing Data Persistence Issues
-1. Check `write_json_atomic()` is called (not `open().write()`)
-2. Ensure `_json_safe()` handles all custom types (pandas Timestamp, numpy scalars, etc.)
-3. Test with corrupt/empty JSON files via `read_json(path, default)` fallback
-
-### Editing Timeline Interactively
-1. Client sends updated `timed` rows + action description via PUT `/api/s/<id>/timed_edit`
-2. Current `timed` saved to `timed_history` as snapshot
-3. New `timed` replaces old; last 50 history entries kept
-4. Revert restores from history (history entry moved to end for redo)
-
-## Development Tips
-
-- **Dates**: Stored as ISO strings in JSON; use `pd.to_datetime(..., errors="coerce")` when parsing
-- **Nullable columns**: Use `fillna()` and `.notna()` to avoid NaN propagation
-- **Config via env vars**: `DATA_DIR`, `SECRET_KEY`, `EDIT_TOKEN`, `ADMIN_EMAIL`, `G_MINUTES`
-- **Tracing**: Optional OpenTelemetry (Flask instrumented if available)
-- **Testing schedules**: Manual POST to `/api/s/<id>/run_allocation` then `/api/s/<id>/generate_schedule`
+**Working style**
+- Keep JSON schemas backward-compatible; migration helpers add missing columns/fields on load.
+- Prefer pandas-aware utilities for time/duration parsing and truthy flags; avoid raw string math.
+- When extending compute, add outputs to schedule dict and persist via `save_schedule()`; restart to reload external script changes.

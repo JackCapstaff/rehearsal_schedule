@@ -9,29 +9,29 @@
     "name": "Derwent Brass",
     "concerts": [
       {
-        "id": "concert_ba3967365ce3",
+        "id": "concert_d36a2982a349",
         "title": "Derwent Brass - Heritage and Innovation",
         "date": "2026-03-04",
-        "time": "20:00:00",
+        "time": "19:30",
         "venue": "Worksop College",
         "uniform": "TBC",
-        "programme": "Set 1:\nThe President\nForce of Destiny\nGrandfater's Clock\nLabour and Love\nElagr Variations\n\n\n\n\n\nSet 2:\nFantasy of Joy\nBlue Jeans\nAladdin\nInterstellar\nHyperdrive\n\n",
+        "programme": "Set 1:\nThe President \nForce of Destiny\nGrandfather's Clock\nLabour and Love\nElgar Variations\n\nSet 2:\nFantasy of Joy\nBlue Jeans\nAladdin\nInterstellar\nHyperdrive",
         "other_info": "",
         "status": "scheduled",
-        "schedule_id": "sched_65858c2d18",
+        "schedule_id": "sched_241c206b8b",
         "is_auto_generated": true
       },
       {
-        "id": "concert_5740a7021bc7",
-        "title": "Derwent Brass - Regional Contest - Sunday March 8th",
+        "id": "concert_1234677589ee",
+        "title": "Derwent Brass - Contest - Sunday March 8th",
         "date": "2026-03-08",
         "time": "10:00:00",
         "venue": "Bedworth Civic Hall",
-        "uniform": "All Black",
-        "programme": "Enigma Variations",
-        "other_info": "",
+        "uniform": "All Blacks",
+        "programme": "Set 1:\nElgar Variations",
+        "other_info": "Draw Time: \nFirst Band: \nParking:",
         "status": "scheduled",
-        "schedule_id": "sched_65858c2d18",
+        "schedule_id": "sched_241c206b8b",
         "is_auto_generated": true
       }
     ]

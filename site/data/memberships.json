@@ -13,7 +13,7 @@
   {
     "user_id": "4a729632800e4901849ad39452dde329",
     "ensemble_id": "rotherham-symphony-orchestra",
-    "role": "member",
+    "role": "admin",
     "status": "active"
   },
   {
@@ -23,7 +23,7 @@
     "status": "active"
   },
   {
-    "user_id": "4a729632800e4901849ad39452dde329",
+    "user_id": "9fa5f65b93314f8bbc9b7bc684890092",
     "ensemble_id": "derwent-brass",
     "role": "member",
     "status": "active"

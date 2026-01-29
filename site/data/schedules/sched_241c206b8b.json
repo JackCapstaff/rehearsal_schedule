@@ -1,11 +1,11 @@
 {
-  "id": "sched_65858c2d18",
+  "id": "sched_241c206b8b",
   "ensemble_id": "derwent-brass",
-  "name": "DB Regionals 2026",
+  "name": "Derwent Brass - Regionals 2026",
   "status": "published",
   "created_by": "872bf6d3b5bd45a1824cfb04c105c1ad",
-  "created_at": 1769684339,
-  "updated_at": 1769689860,
+  "created_at": 1769695755,
+  "updated_at": 1769696566,
   "G": 5,
   "works": [],
   "rehearsals": [
@@ -38,7 +38,7 @@
       "Harp": "N",
       "Brass": "Y",
       "Soloist": "N",
-      "Section": "Sectionals",
+      "Section": "Horns",
       "Event Type": "Sectional",
       "work": "Elgar Variations"
     },
@@ -55,7 +55,7 @@
       "Harp": "N",
       "Brass": "Y",
       "Soloist": "N",
-      "Section": "Sectional",
+      "Section": "Percussion",
       "Event Type": "Sectional",
       "work": "Elgar Variations"
     },
@@ -175,10 +175,10 @@
     {
       "Event": "Rehearsal",
       "Rehearsal": 11,
-      "Date": "2026-02-24",
+      "Date": "2026-02-24 00:00:00",
       "Include in allocation": "Y",
       "Start Time": "20:00:00",
-      "End Time": "22:00:00",
+      "End Time": "20:30:00",
       "Break": 0,
       "Percs": "Y",
       "Piano": "N",
@@ -186,13 +186,12 @@
       "Brass": "Y",
       "Soloist": "N",
       "Section": "Full",
-      "Event Type": "Rehearsal",
-      "work": ""
+      "Event Type": "Rehearsal"
     },
     {
       "Event": "Rehearsal",
       "Rehearsal": 12,
-      "Date": "2026-02-27 00:00:00",
+      "Date": "2026-02-27",
       "Include in allocation": "Y",
       "Start Time": "19:00:00",
       "End Time": "21:00:00",
@@ -202,8 +201,9 @@
       "Harp": "N",
       "Brass": "Y",
       "Soloist": "N",
-      "Section": "Full",
-      "Event Type": "Rehearsal"
+      "Section": "Full - With Paul Hollad",
+      "Event Type": "Rehearsal",
+      "work": ""
     },
     {
       "Event": "Rehearsal",
@@ -218,7 +218,7 @@
       "Harp": "N",
       "Brass": "Y",
       "Soloist": "N",
-      "Section": "Full",
+      "Section": "Full - With Paul Holland",
       "Event Type": "Rehearsal"
     },
     {
@@ -242,7 +242,7 @@
       "Rehearsal": 15,
       "Date": "2026-03-04",
       "Include in allocation": "N",
-      "Start Time": "20:00:00",
+      "Start Time": "19:30",
       "End Time": "22:00:00",
       "Break": 0,
       "Percs": "Y",
@@ -252,7 +252,7 @@
       "Soloist": "N",
       "Section": "Full",
       "Event Type": "Concert",
-      "concert_id": "concert_ba3967365ce3",
+      "concert_id": "concert_d36a2982a349",
       "Venue": "Worksop College",
       "Uniform": "TBC"
     },
@@ -303,9 +303,9 @@
       "Soloist": "N",
       "Section": "Full",
       "Event Type": "Contest",
-      "concert_id": "concert_5740a7021bc7",
+      "concert_id": "concert_1234677589ee",
       "Venue": "Bedworth Civic Hall",
-      "Uniform": "All Black"
+      "Uniform": "All Blacks"
     }
   ],
   "allocation": [],
@@ -423,7 +423,7 @@
       "Rehearsal Time (minutes)": 120,
       "Break Start (HH:MM)": "",
       "Break End (HH:MM)": "",
-      "Section": "Sectionals",
+      "Section": "Horns",
       "Date": "2026-01-24",
       "Event Type": "Sectional",
       "concert_id": NaN
@@ -436,7 +436,7 @@
       "Rehearsal Time (minutes)": 120,
       "Break Start (HH:MM)": "",
       "Break End (HH:MM)": "",
-      "Section": "Sectionals",
+      "Section": "Horns",
       "Date": "2026-01-24",
       "Event Type": "Sectional",
       "concert_id": NaN
@@ -449,7 +449,7 @@
       "Rehearsal Time (minutes)": 120,
       "Break Start (HH:MM)": "",
       "Break End (HH:MM)": "",
-      "Section": "Sectionals",
+      "Section": "Horns",
       "Date": "2026-01-24",
       "Event Type": "Sectional",
       "concert_id": NaN
@@ -462,7 +462,7 @@
       "Rehearsal Time (minutes)": 120,
       "Break Start (HH:MM)": "",
       "Break End (HH:MM)": "",
-      "Section": "Sectionals",
+      "Section": "Horns",
       "Date": "2026-01-24",
       "Event Type": "Sectional",
       "concert_id": NaN
@@ -475,7 +475,7 @@
       "Rehearsal Time (minutes)": 120,
       "Break Start (HH:MM)": "",
       "Break End (HH:MM)": "",
-      "Section": "Sectional",
+      "Section": "Percussion",
       "Date": "2026-01-25",
       "Event Type": "Sectional",
       "concert_id": NaN
@@ -758,7 +758,7 @@
       "Rehearsal": 7,
       "Title": "Elgar Variations",
       "Time in Rehearsal": "20:15:00",
-      "Rehearsal Time (minutes)": 15,
+      "Rehearsal Time (minutes)": 95,
       "Break Start (HH:MM)": "",
       "Break End (HH:MM)": "",
       "Section": "Full",
@@ -892,7 +892,7 @@
       "Break Start (HH:MM)": "",
       "Break End (HH:MM)": "",
       "Section": "Full",
-      "Date": "2026-02-24",
+      "Date": "2026-02-24 00:00:00",
       "Event Type": "Rehearsal",
       "concert_id": NaN
     },
@@ -901,11 +901,11 @@
       "Rehearsal": 11,
       "Title": "Elgar Variations",
       "Time in Rehearsal": "20:10:00",
-      "Rehearsal Time (minutes)": 20,
+      "Rehearsal Time (minutes)": 110,
       "Break Start (HH:MM)": "",
       "Break End (HH:MM)": "",
       "Section": "Full",
-      "Date": "2026-02-24",
+      "Date": "2026-02-24 00:00:00",
       "Event Type": "Rehearsal",
       "concert_id": NaN
     },
@@ -917,8 +917,8 @@
       "Rehearsal Time (minutes)": 120,
       "Break Start (HH:MM)": "",
       "Break End (HH:MM)": "",
-      "Section": "Full",
-      "Date": "2026-02-27 00:00:00",
+      "Section": "Full - With Paul Hollad",
+      "Date": "2026-02-27",
       "Event Type": "Rehearsal",
       "concert_id": NaN
     },
@@ -930,7 +930,7 @@
       "Rehearsal Time (minutes)": 360,
       "Break Start (HH:MM)": "",
       "Break End (HH:MM)": "",
-      "Section": "Full",
+      "Section": "Full - With Paul Holland",
       "Date": "2026-02-28 00:00:00",
       "Event Type": "Rehearsal",
       "concert_id": NaN
@@ -1107,20 +1107,20 @@
     {
       "_index": 61,
       "Rehearsal": 15,
-      "Title": "Derwent Brass - Concert - Wednesday March 4th",
-      "Time in Rehearsal": "20:00:00",
+      "Title": "Derwent Brass - Heritage and Innovation",
+      "Time in Rehearsal": "19:30",
       "Rehearsal Time (minutes)": 0,
       "Break Start (HH:MM)": "",
       "Break End (HH:MM)": "",
       "Section": "Full",
       "Date": "2026-03-04",
       "Event Type": "Concert",
-      "concert_id": "concert_ba3967365ce3"
+      "concert_id": "concert_d36a2982a349"
     },
     {
       "_index": 62,
       "Rehearsal": 18,
-      "Title": "Derwent Brass - Regional Contest - Sunday March 8th",
+      "Title": "Derwent Brass - Contest - Sunday March 8th",
       "Time in Rehearsal": "10:00:00",
       "Rehearsal Time (minutes)": 0,
       "Break Start (HH:MM)": "",
@@ -1128,11 +1128,227 @@
       "Section": "Full",
       "Date": "2026-03-08",
       "Event Type": "Concert",
-      "concert_id": "concert_5740a7021bc7"
+      "concert_id": "concert_1234677589ee"
     }
   ],
   "timed_history": [],
-  "generated_at": "2026-01-29T10:59:02.586105+00:00Z",
+  "audit_log": [
+    {
+      "ts": 1769695781,
+      "action": "rehearsal_update",
+      "description": "Rehearsal 2 updated",
+      "actor_id": "872bf6d3b5bd45a1824cfb04c105c1ad",
+      "actor_email": "jack@jackcapstaff.com",
+      "actor_name": "Jack Capstaff",
+      "meta": {
+        "rehearsal": 2,
+        "fields": [
+          "date",
+          "start_time",
+          "end_time",
+          "include_in_allocation",
+          "event",
+          "section",
+          "work"
+        ]
+      }
+    },
+    {
+      "ts": 1769695799,
+      "action": "rehearsal_update",
+      "description": "Rehearsal 2 updated",
+      "actor_id": "872bf6d3b5bd45a1824cfb04c105c1ad",
+      "actor_email": "jack@jackcapstaff.com",
+      "actor_name": "Jack Capstaff",
+      "meta": {
+        "rehearsal": 2,
+        "fields": [
+          "date",
+          "start_time",
+          "end_time",
+          "include_in_allocation",
+          "event",
+          "section",
+          "work"
+        ]
+      }
+    },
+    {
+      "ts": 1769695815,
+      "action": "rehearsal_update",
+      "description": "Rehearsal 2 updated",
+      "actor_id": "872bf6d3b5bd45a1824cfb04c105c1ad",
+      "actor_email": "jack@jackcapstaff.com",
+      "actor_name": "Jack Capstaff",
+      "meta": {
+        "rehearsal": 2,
+        "fields": [
+          "date",
+          "start_time",
+          "end_time",
+          "include_in_allocation",
+          "event",
+          "section",
+          "work"
+        ]
+      }
+    },
+    {
+      "ts": 1769695824,
+      "action": "rehearsal_update",
+      "description": "Rehearsal 2 updated",
+      "actor_id": "872bf6d3b5bd45a1824cfb04c105c1ad",
+      "actor_email": "jack@jackcapstaff.com",
+      "actor_name": "Jack Capstaff",
+      "meta": {
+        "rehearsal": 2,
+        "fields": [
+          "date",
+          "start_time",
+          "end_time",
+          "include_in_allocation",
+          "event",
+          "section",
+          "work"
+        ]
+      }
+    },
+    {
+      "ts": 1769695834,
+      "action": "rehearsal_update",
+      "description": "Rehearsal 3 updated",
+      "actor_id": "872bf6d3b5bd45a1824cfb04c105c1ad",
+      "actor_email": "jack@jackcapstaff.com",
+      "actor_name": "Jack Capstaff",
+      "meta": {
+        "rehearsal": 3,
+        "fields": [
+          "date",
+          "start_time",
+          "end_time",
+          "include_in_allocation",
+          "event",
+          "section",
+          "work"
+        ]
+      }
+    },
+    {
+      "ts": 1769695845,
+      "action": "rehearsal_update",
+      "description": "Rehearsal 9 updated",
+      "actor_id": "872bf6d3b5bd45a1824cfb04c105c1ad",
+      "actor_email": "jack@jackcapstaff.com",
+      "actor_name": "Jack Capstaff",
+      "meta": {
+        "rehearsal": 9,
+        "fields": [
+          "date",
+          "start_time",
+          "end_time",
+          "include_in_allocation",
+          "event",
+          "section",
+          "work"
+        ]
+      }
+    },
+    {
+      "ts": 1769695877,
+      "action": "concert_updated",
+      "description": "Concert updated: Derwent Brass - Heritage and Innovation",
+      "actor_id": "872bf6d3b5bd45a1824cfb04c105c1ad",
+      "actor_email": "jack@jackcapstaff.com",
+      "actor_name": "Jack Capstaff",
+      "meta": {
+        "concert_id": "concert_d36a2982a349",
+        "date": "2026-03-04",
+        "time": "19:30"
+      }
+    },
+    {
+      "ts": 1769695940,
+      "action": "concert_updated",
+      "description": "Concert updated: Derwent Brass - Heritage and Innovation",
+      "actor_id": "872bf6d3b5bd45a1824cfb04c105c1ad",
+      "actor_email": "jack@jackcapstaff.com",
+      "actor_name": "Jack Capstaff",
+      "meta": {
+        "concert_id": "concert_d36a2982a349",
+        "date": "2026-03-04",
+        "time": "19:30"
+      }
+    },
+    {
+      "ts": 1769695988,
+      "action": "concert_updated",
+      "description": "Concert updated: Derwent Brass - Contest - Sunday March 8th",
+      "actor_id": "872bf6d3b5bd45a1824cfb04c105c1ad",
+      "actor_email": "jack@jackcapstaff.com",
+      "actor_name": "Jack Capstaff",
+      "meta": {
+        "concert_id": "concert_1234677589ee",
+        "date": "2026-03-08",
+        "time": "10:00:00"
+      }
+    },
+    {
+      "ts": 1769696056,
+      "action": "rehearsal_update",
+      "description": "Rehearsal 12 updated",
+      "actor_id": "872bf6d3b5bd45a1824cfb04c105c1ad",
+      "actor_email": "jack@jackcapstaff.com",
+      "actor_name": "Jack Capstaff",
+      "meta": {
+        "rehearsal": 12,
+        "fields": [
+          "date",
+          "start_time",
+          "end_time",
+          "include_in_allocation",
+          "event",
+          "section",
+          "work"
+        ]
+      }
+    },
+    {
+      "ts": 1769696069,
+      "action": "rehearsal_event_type",
+      "description": "Event type set to Rehearsal",
+      "actor_id": "872bf6d3b5bd45a1824cfb04c105c1ad",
+      "actor_email": "jack@jackcapstaff.com",
+      "actor_name": "Jack Capstaff",
+      "meta": {
+        "rehearsal": 13,
+        "section": "Full - With Paul Holland"
+      }
+    },
+    {
+      "ts": 1769696566,
+      "action": "status_change",
+      "description": "Status set to published",
+      "actor_id": "872bf6d3b5bd45a1824cfb04c105c1ad",
+      "actor_email": "jack@jackcapstaff.com",
+      "actor_name": "Jack Capstaff",
+      "meta": {}
+    },
+    {
+      "ts": 1769696567,
+      "action": "notification_sent",
+      "description": "Sent update to 1 recipient(s)",
+      "actor_id": "872bf6d3b5bd45a1824cfb04c105c1ad",
+      "actor_email": "jack@jackcapstaff.com",
+      "actor_name": "Jack Capstaff",
+      "meta": {
+        "success": 1,
+        "failed": 0,
+        "subject": "Rehearsal schedule updates for Derwent Brass"
+      }
+    }
+  ],
+  "last_notified_at": 1769696567,
+  "generated_at": "2026-01-29T14:09:26.097528+00:00Z",
   "rehearsals_cols": [
     "Event",
     "Rehearsal",

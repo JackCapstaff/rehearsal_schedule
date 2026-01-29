@@ -56,6 +56,7 @@
             <strong>{{ s.name }}</strong>
             <span class="small">({{ s.ensemble_id }}, {{ s.status }})</span>
             · <a href="{{ url_for('schedule_view', schedule_id=s.id) }}">View</a>
+            · <a href="{{ url_for('download_schedule_pdf', schedule_id=s.id) }}">Download PDF</a>
             {% if user.is_admin %}
               · <a href="{{ url_for('admin_edit_schedule', schedule_id=s.id) }}">Edit</a>
             {% endif %}

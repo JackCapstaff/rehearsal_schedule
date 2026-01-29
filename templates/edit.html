@@ -27,6 +27,10 @@
         {% if status == "draft" %}
           <form method="post" action="{{ url_for('admin_set_schedule_status', schedule_id=schedule_id) }}">
             <input type="hidden" name="status" value="published">
+            <label class="small" style="display:inline-flex; align-items:center; gap:6px; margin-right:8px;">
+              <input type="checkbox" name="notify_publish" checked>
+              Email members about publish
+            </label>
             <button class="btn" type="submit">Publish</button>
           </form>
         {% else %}
@@ -52,6 +56,49 @@
             <i class="bi bi-trash"></i> Delete Schedule
           </button>
         </form>
+      </div>
+    </div>
+  </div>
+
+  <!-- Notify modal -->
+  <div id="notifyModal" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.35); z-index:10000; align-items:center; justify-content:center;">
+    <div style="background:white; padding:16px; border-radius:6px; min-width:320px; max-width:520px; box-shadow:0 10px 30px rgba(0,0,0,0.2);">
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+        <div style="font-weight:600;">Select recipients</div>
+        <button class="btn secondary" type="button" onclick="closeNotifyModal()">Close</button>
+      </div>
+      <div style="display:flex; justify-content:space-between; align-items:center; gap:8px; margin-bottom:6px;">
+        <div class="small">Recipients</div>
+        <div style="display:flex; gap:6px;">
+          <button class="btn secondary" type="button" onclick="toggleRecipients()" id="toggleRecipientsBtn">Edit recipients</button>
+          <button class="btn secondary" type="button" onclick="selectAllRecipients(true)">Select all</button>
+          <button class="btn secondary" type="button" onclick="selectAllRecipients(false)">Clear all</button>
+        </div>
+      </div>
+      <div id="notifyRecipientList" style="max-height:320px; overflow-y:auto; margin-bottom:12px; border:1px solid #e5e7eb; padding:8px; border-radius:4px;"></div>
+      <div style="display:flex; flex-direction:column; gap:8px; margin-bottom:12px;">
+        <div>
+          <div class="small" style="margin-bottom:4px;">Subject</div>
+          <input type="text" id="notifySubject" placeholder="Subject" style="width:100%; padding:8px; border:1px solid #d1d5db; border-radius:4px;">
+        </div>
+        <div>
+          <div class="small" style="margin-bottom:4px; display:flex; justify-content:space-between; align-items:center; gap:8px;">
+            <span>Email message</span>
+            <span style="display:flex; gap:6px; align-items:center;">
+              <button class="btn secondary" type="button" onclick="formatSelection('b')" title="Bold"><strong>B</strong></button>
+              <button class="btn secondary" type="button" onclick="formatSelection('i')" title="Italic"><em>I</em></button>
+              <button class="btn secondary" type="button" onclick="formatSelection('u')" title="Underline"><u>U</u></button>
+              <button class="btn secondary" type="button" onclick="insertBulletList()" title="Bulleted list">• List</button>
+            </span>
+          </div>
+          <textarea id="notifyBody" rows="10" placeholder="There have been some updates..." style="width:100%; padding:10px; border:1px solid #d1d5db; border-radius:4px; font-family: 'Segoe UI', sans-serif; line-height:1.4;"></textarea>
+          <div class="small" style="color:#6b7280; margin-top:4px;">Basic formatting allowed: bold, italic, underline, bullet lists. Updates list and schedule link are added automatically.</div>
+        </div>
+        <div id="notifyLinkPreview" class="small" style="color:#374151;"></div>
+      </div>
+      <div style="display:flex; justify-content:flex-end; gap:8px;">
+        <button class="btn secondary" type="button" onclick="closeNotifyModal()">Cancel</button>
+        <button class="btn" type="button" id="notifyModalSend">Send</button>
       </div>
     </div>
   </div>
@@ -142,11 +189,16 @@
   <!-- Timeline Editor       -->
   <!-- ===================== -->
   <div class="card">
-    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
-      <h3 style="margin:0;">Timeline Editor</h3>
-      <button class="btn secondary" type="button" onclick="toggleHistoryPanel()" style="padding:6px 12px;">📋 History</button>
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px; gap:10px; flex-wrap:wrap;">
+      <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+        <h3 style="margin:0;">Timeline Editor</h3>
+        <button class="btn secondary" type="button" onclick="toggleHistoryPanel()" style="padding:6px 12px;">📋 History</button>
+      </div>
+      <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+        <button class="btn secondary" type="button" onclick="openNotifyModal()">Send updates</button>
+      </div>
     </div>
-    <div class="small" style="margin-bottom:12px;">Drag works to reorder, drag edges to resize. Auto-saves with change log.</div>
+    <div class="small" style="margin-bottom:12px;">Drag works to reorder, drag edges to resize. Auto-saves with change log. Use "Send updates" to email members.</div>
     
     <!-- History Panel (hidden by default) -->
     <div id="historyPanel" style="display:none; margin-bottom:16px; padding:12px; background:#f5f5f5; border-radius:4px; max-height:300px; overflow-y:auto;">
@@ -180,6 +232,151 @@
 
   // Let editor.js initialise tables
   initEditor(window.INITIAL_DATA);
+
+  let lastDefaultSubject = "";
+  let lastDefaultBody = "";
+  let currentScheduleLink = "";
+
+  async function readJsonOrThrow(res) {
+    const ct = res.headers.get('content-type') || '';
+    if (ct.includes('application/json')) return res.json();
+    const text = await res.text();
+    throw new Error(`Unexpected response (${res.status}): ${text.slice(0, 200)}`);
+  }
+
+  // Notification modal helpers
+  async function openNotifyModal() {
+    const modal = document.getElementById('notifyModal');
+    const list = document.getElementById('notifyRecipientList');
+    const subjectInput = document.getElementById('notifySubject');
+    const bodyInput = document.getElementById('notifyBody');
+    if (!modal || !list) return;
+
+    list.innerHTML = '<div class="small">Loading recipients…</div>';
+    modal.style.display = 'block';
+
+    try {
+      const res = await fetch(`/api/s/{{ schedule_id }}/notify_update`, { method: 'GET', credentials: 'same-origin' });
+      const data = await readJsonOrThrow(res);
+      if (!res.ok || !data.ok) {
+        throw new Error(data.error || `Unable to load recipients (status ${res.status})`);
+      }
+
+      if (!data.recipients || data.recipients.length === 0) {
+        list.innerHTML = '<div class="small">No recipients for this ensemble.</div>';
+        return;
+      }
+
+      lastDefaultSubject = data.default_subject || '';
+      lastDefaultBody = data.default_body || '';
+      currentScheduleLink = data.schedule_link || '';
+      if (subjectInput) subjectInput.value = lastDefaultSubject;
+      if (bodyInput) bodyInput.value = lastDefaultBody;
+      const linkPreview = document.getElementById('notifyLinkPreview');
+      if (linkPreview) {
+        if (currentScheduleLink) {
+          linkPreview.innerHTML = `Schedule link: <a href="${currentScheduleLink}" target="_blank" rel="noopener">${currentScheduleLink}</a>`;
+        } else {
+          linkPreview.textContent = '';
+        }
+      }
+
+      list.innerHTML = data.recipients.map(r => `
+        <label style="display:flex; align-items:center; gap:8px; padding:6px 0; border-bottom:1px solid #f0f0f0;">
+          <input type="checkbox" class="notify-recipient" value="${r.email}" checked>
+          <span>
+            <div><strong>${r.email}</strong></div>
+            <div class="small" style="color:#666;">${r.status || ''}</div>
+          </span>
+        </label>
+      `).join('');
+      document.getElementById('notifyModalSend').onclick = () => sendSelectedNotifications();
+    } catch (err) {
+      console.error('Load recipients failed:', err);
+      list.innerHTML = `<div class="small" style="color:#dc2626;">${err.message}</div>`;
+    }
+  }
+
+  function closeNotifyModal() {
+    const modal = document.getElementById('notifyModal');
+    if (modal) modal.style.display = 'none';
+  }
+
+  function toggleRecipients() {
+    const list = document.getElementById('notifyRecipientList');
+    const btn = document.getElementById('toggleRecipientsBtn');
+    if (!list || !btn) return;
+    const isHidden = list.style.display === 'none';
+    list.style.display = isHidden ? 'block' : 'none';
+    btn.textContent = isHidden ? 'Hide recipients' : 'Edit recipients';
+  }
+
+  function selectAllRecipients(selectAll) {
+    document.querySelectorAll('.notify-recipient').forEach(cb => {
+      cb.checked = !!selectAll;
+    });
+  }
+
+  function formatSelection(tag) {
+    const ta = document.getElementById('notifyBody');
+    if (!ta) return;
+    const start = ta.selectionStart;
+    const end = ta.selectionEnd;
+    const before = ta.value.substring(0, start);
+    const selected = ta.value.substring(start, end) || 'text';
+    const after = ta.value.substring(end);
+    const openTag = `<${tag}>`;
+    const closeTag = `</${tag}>`;
+    ta.value = before + openTag + selected + closeTag + after;
+    const cursorPos = before.length + openTag.length + selected.length + closeTag.length;
+    ta.focus();
+    ta.setSelectionRange(cursorPos, cursorPos);
+  }
+
+  function insertBulletList() {
+    const ta = document.getElementById('notifyBody');
+    if (!ta) return;
+    const start = ta.selectionStart;
+    const end = ta.selectionEnd;
+    const before = ta.value.substring(0, start);
+    const selected = ta.value.substring(start, end) || 'Item 1\nItem 2';
+    const after = ta.value.substring(end);
+    const listHtml = `<ul>\n<li>${selected.replace(/\n/g, '</li>\n<li>')}</li>\n</ul>`;
+    ta.value = before + listHtml + after;
+    const cursorPos = before.length + listHtml.length;
+    ta.focus();
+    ta.setSelectionRange(cursorPos, cursorPos);
+  }
+
+  async function sendSelectedNotifications() {
+    const checked = Array.from(document.querySelectorAll('.notify-recipient:checked')).map(cb => cb.value);
+    const subjectInput = document.getElementById('notifySubject');
+    const bodyInput = document.getElementById('notifyBody');
+    const subject = (subjectInput && subjectInput.value.trim()) || lastDefaultSubject || 'Schedule updates';
+    const message = (bodyInput && bodyInput.value.trim()) || lastDefaultBody || 'Schedule updated';
+
+    try {
+      const res = await fetch(`/api/s/{{ schedule_id }}/notify_update`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'same-origin',
+        body: JSON.stringify({ subject, body: message, recipients: checked })
+      });
+      const result = await readJsonOrThrow(res);
+      if (!res.ok || !result.ok) {
+        throw new Error(result.error || `Notification failed (status ${res.status})`);
+      }
+      if (result.notified) {
+        alert(`Emails sent to ${result.recipient_count} recipient(s).`);
+      } else {
+        alert(result.error || 'No recipients or email disabled.');
+      }
+      closeNotifyModal();
+    } catch (err) {
+      console.error('Notify failed:', err);
+      alert('Failed to send updates: ' + err.message);
+    }
+  }
   
   // Populate sections editor
   function renderSectionsEditor() {

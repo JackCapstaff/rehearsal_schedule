@@ -330,6 +330,22 @@
     color: #ff6b6b;
 }
 
+.calendar-day.past-day {
+    background-color: #f7f7f7;
+    color: #9ca3af;
+    opacity: 0.85;
+}
+
+.reh-past .accordion-button {
+    background: #f6f6f6;
+    color: #7a7a7a;
+}
+
+.reh-past {
+    border-color: #e5e5e5;
+    opacity: 0.92;
+}
+
 /* Mobile: Stack calendars vertically */
 @media (max-width: 767.98px) {
     .calendar-day {
@@ -456,6 +472,8 @@ function renderListView() {
     const accordion = document.getElementById('rehearsalAccordion');
     const loading = document.getElementById('listViewLoading');
     const empty = document.getElementById('listViewEmpty');
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
     
     loading.classList.add('d-none');
     
@@ -471,6 +489,8 @@ function renderListView() {
     
     accordion.innerHTML = rehearsals.map((reh, index) => {
         const date = new Date(reh.date);
+        const dateMidnight = new Date(date.getFullYear(), date.getMonth(), date.getDate());
+        const isPast = dateMidnight < today;
         const day = date.getDate();
         const suffix = ['th', 'st', 'nd', 'rd'][((day % 100) - 20) % 10] || ['th', 'st', 'nd', 'rd'][day % 100] || 'th';
         const dateStr = date.toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' }).replace(/\d+/, day + suffix);
@@ -527,8 +547,10 @@ function renderListView() {
             headerClass = '';
         }
         
+        const pastClass = isPast ? 'reh-past' : '';
+
         return `
-            <div class="accordion-item">
+            <div class="accordion-item ${pastClass}">
                 <h2 class="accordion-header">
                     <button class="accordion-button collapsed ${headerClass}" type="button" 
                             data-bs-toggle="collapse" data-bs-target="#collapse${index}">
@@ -592,6 +614,7 @@ function renderMonth(date) {
     
     for (let i = 0; i < 42; i++) {
         const isOtherMonth = currentDate.getMonth() !== month;
+        const isPastDay = currentDate < today;
         const dateStr = currentDate.toISOString().split('T')[0];
         const isToday = currentDate.getTime() === today.getTime();
         // Extract rehearsals from the response object
@@ -604,7 +627,7 @@ function renderMonth(date) {
             return concertDate === dateStr && hasScheduledStatus;
         });
         
-        html += `<div class="calendar-day ${isOtherMonth ? 'other-month' : ''} ${isToday ? 'today' : ''}">
+        html += `<div class="calendar-day ${isOtherMonth ? 'other-month' : ''} ${isToday ? 'today' : ''} ${isPastDay ? 'past-day' : ''}">
             <div class="calendar-day-number">${currentDate.getDate()}</div>
             <div class="calendar-rehearsals-container">`;
         
