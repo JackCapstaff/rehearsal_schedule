@@ -63,6 +63,20 @@ TIMED_XLSX_OUT = "timed_rehearsal.xlsx"  # for script4 compatibility
 
 ADMIN_EMAIL = (os.environ.get("ADMIN_EMAIL") or "").strip().lower()
 
+# Instrument options (orchestral + brass band core list)
+INSTRUMENT_OPTIONS = [
+    "Violin", "Viola", "Cello", "Double Bass", "Harp",
+    "Flute", "Piccolo", "Alto Flute", "Bass Flute", "Oboe", "Cor Anglais",
+    "Bassoon", "Contrabassoon", "Bb Clarinet", "A Clarinet", "Eb Clarinet", "Bass Clarinet",
+    "Saxophone - Soprano", "Saxophone - Alto", "Saxophone - Tenor", "Saxophone - Baritone",
+    "Trumpet", "Cornet", "Soprano Cornet (Eb)", "Flugelhorn", "French Horn",
+    "Tenor Horn (Eb)", "Baritone Horn", "Euphonium", "Tenor Trombone", "Bass Trombone",
+    "Tuba (Eb)", "Tuba (Bb)", "Sousaphone",
+    "Percussion", "Timpani", "Drum Kit",
+    "Piano/Keyboard", "Organ", "Guitar", "Bass Guitar", "Voice",
+    "Other / Not listed",
+]
+
 # Outbound email (Brevo) configuration
 BREVO_API_KEY = os.environ.get("BREVO_API_KEY", "").strip()
 BREVO_FROM_EMAIL = os.environ.get("BREVO_FROM_EMAIL", "rehearsals@jackcapstaff.com").strip()
@@ -888,6 +902,17 @@ def load_invitations() -> List[dict]:
 
 def save_invitations(invitations: List[dict]):
     write_json_atomic(invitations_path(), invitations)
+
+
+def build_invitation_link(invite_code: str) -> str:
+    """Return an absolute invitation URL for the register page."""
+    if not invite_code:
+        return ""
+    try:
+        return url_for("register_view", invite=invite_code, _external=True)
+    except Exception:
+        # Fallback to relative path if app lacks SERVER_NAME context
+        return url_for("register_view", invite=invite_code)
 
 
 # ----------------------------
@@ -3794,7 +3819,7 @@ def register_view():
                 if ensemble:
                     invite["ensemble_name"] = ensemble.get("name")
     
-    return render_template("register.html", ensembles=ensembles, invite_code=invite_code, invite=invite)
+    return render_template("register.html", ensembles=ensembles, invite_code=invite_code, invite=invite, instrument_options=INSTRUMENT_OPTIONS)
 
 
 @app.post("/register")
@@ -3812,7 +3837,24 @@ def register_post():
 
     users = load_users()
     if any(u for u in users if u.get("email") == email):
-        return render_template("register.html", ensembles=load_ensembles(), error="Email already registered."), 400
+        return render_template(
+            "register.html",
+            ensembles=load_ensembles(),
+            invite_code=invite_code,
+            invite=None,
+            instrument_options=INSTRUMENT_OPTIONS,
+            error="Email already registered.",
+        ), 400
+
+    if instrument and instrument not in INSTRUMENT_OPTIONS:
+        return render_template(
+            "register.html",
+            ensembles=load_ensembles(),
+            invite_code=invite_code,
+            invite=None,
+            instrument_options=INSTRUMENT_OPTIONS,
+            error="Please select an instrument from the list.",
+        ), 400
     
     # Process invitation code
     invite = None
@@ -3834,7 +3876,14 @@ def register_post():
 
     # If no valid invitation and no ensemble selected, require ensemble
     if not ensemble_id:
-        return render_template("register.html", ensembles=load_ensembles(), error="Please select an ensemble or use a valid invitation code."), 400
+        return render_template(
+            "register.html",
+            ensembles=load_ensembles(),
+            invite_code=invite_code,
+            invite=invite,
+            instrument_options=INSTRUMENT_OPTIONS,
+            error="Please select an ensemble or use a valid invitation code.",
+        ), 400
 
     uid = uuid.uuid4().hex
     display_name = f"{first_name} {last_name}".strip()
@@ -5868,6 +5917,10 @@ def admin_view_invitations(ensemble_id):
     invites = [i for i in load_invitations() if i.get("ensemble_id") == ensemble_id]
     # Sort by creation date descending
     invites.sort(key=lambda x: x.get("created_at", 0), reverse=True)
+
+    # Attach shareable links
+    for inv in invites:
+        inv["invite_url"] = build_invitation_link(inv.get("code", ""))
     
     u = current_user()
     return render_template("admin_invitations.html", ensemble=ensemble, invitations=invites, user=u)

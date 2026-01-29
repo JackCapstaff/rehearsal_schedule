@@ -76,6 +76,14 @@
         </div>
       </div>
       <div id="notifyRecipientList" style="max-height:320px; overflow-y:auto; margin-bottom:12px; border:1px solid #e5e7eb; padding:8px; border-radius:4px;"></div>
+      <div style="margin-bottom:12px; display:flex; flex-direction:column; gap:6px;">
+        <label class="small">Add custom recipient</label>
+        <div style="display:flex; gap:8px; align-items:center;">
+          <input type="email" id="notifyCustomEmail" placeholder="name@example.com" style="flex:1; padding:8px; border:1px solid #d1d5db; border-radius:4px;">
+          <button class="btn secondary" type="button" onclick="addCustomRecipient()">Add</button>
+        </div>
+        <div id="customRecipientChips" class="small" style="display:flex; gap:6px; flex-wrap:wrap;"></div>
+      </div>
       <div style="display:flex; flex-direction:column; gap:8px; margin-bottom:12px;">
         <div>
           <div class="small" style="margin-bottom:4px;">Subject</div>
@@ -236,6 +244,7 @@
   let lastDefaultSubject = "";
   let lastDefaultBody = "";
   let currentScheduleLink = "";
+  let customRecipients = [];
 
   async function readJsonOrThrow(res) {
     const ct = res.headers.get('content-type') || '';
@@ -246,6 +255,8 @@
 
   // Notification modal helpers
   async function openNotifyModal() {
+    customRecipients = [];
+    renderCustomRecipientChips();
     const modal = document.getElementById('notifyModal');
     const list = document.getElementById('notifyRecipientList');
     const subjectInput = document.getElementById('notifySubject');
@@ -317,6 +328,42 @@
     });
   }
 
+  function renderCustomRecipientChips() {
+    const chips = document.getElementById('customRecipientChips');
+    if (!chips) return;
+    if (!customRecipients.length) {
+      chips.innerHTML = '<span style="color:#6b7280;">No custom recipients added.</span>';
+      return;
+    }
+    chips.innerHTML = customRecipients.map(email => `
+      <span style="display:inline-flex; align-items:center; gap:6px; background:#e5e7eb; padding:4px 8px; border-radius:12px;">
+        <span>${email}</span>
+        <button type="button" style="border:none; background:none; cursor:pointer; color:#ef4444;" aria-label="Remove ${email}" onclick="removeCustomRecipient('${email}')">×</button>
+      </span>
+    `).join('');
+  }
+
+  function addCustomRecipient() {
+    const input = document.getElementById('notifyCustomEmail');
+    if (!input) return;
+    const email = (input.value || '').trim();
+    if (!email) return;
+    if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) {
+      alert('Please enter a valid email address');
+      return;
+    }
+    if (!customRecipients.includes(email)) {
+      customRecipients.push(email);
+      renderCustomRecipientChips();
+    }
+    input.value = '';
+  }
+
+  function removeCustomRecipient(email) {
+    customRecipients = customRecipients.filter(e => e !== email);
+    renderCustomRecipientChips();
+  }
+
   function formatSelection(tag) {
     const ta = document.getElementById('notifyBody');
     if (!ta) return;
@@ -350,6 +397,7 @@
 
   async function sendSelectedNotifications() {
     const checked = Array.from(document.querySelectorAll('.notify-recipient:checked')).map(cb => cb.value);
+    const recipients = [...checked, ...customRecipients].filter(Boolean);
     const subjectInput = document.getElementById('notifySubject');
     const bodyInput = document.getElementById('notifyBody');
     const subject = (subjectInput && subjectInput.value.trim()) || lastDefaultSubject || 'Schedule updates';
@@ -360,7 +408,7 @@
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'same-origin',
-        body: JSON.stringify({ subject, body: message, recipients: checked })
+        body: JSON.stringify({ subject, body: message, recipients })
       });
       const result = await readJsonOrThrow(res);
       if (!res.ok || !result.ok) {

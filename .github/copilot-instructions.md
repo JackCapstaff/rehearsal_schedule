@@ -1,41 +1,43 @@
 # Rehearsal Schedule Web — Copilot Instructions
 
-**Purpose**: Flask app that allocates musical works to rehearsals, orders them, assigns timings, and lets admins edit timelines; members view published schedules and export PDFs.
+- Purpose: Flask app that imports works/rehearsals, allocates them, orders/segments rehearsals, assigns times, and serves admin/member views with PDF export and optional email notifications.
 
-**Core components**
-- [app.py](app.py): routes, auth, schedule CRUD, compute triggers, timeline/history, PDF export, invitations; relies on JSON files in [site/data/](site/data/).
-- [core.py](core.py): time parsing (`minutes_from_timecell`), rehearsal/work prep, bundle/order logic; dynamically loads external scripts [1-Import-Time_per_work_per_rehearsal.py](1-Import-Time_per_work_per_rehearsal.py), [2-Orchestration_organisation.py](2-Orchestration_organisation.py), [3-Organised_rehearsal_with_time.py](3-Organised_rehearsal_with_time.py) (restart app after changes). Optional [4 - Final Compile and PDF.py](4%20-%20Final%20Compile%20and%20PDF.py) for XLSX compatibility.
-- UI: templates in [templates/](templates/) (admin, edit, view, member dashboard); client JS in [static/](static/) (timeline drag/swap in `editor.js`, older timeline in [static/Retired/timeline_new.js](static/Retired/timeline_new.js)).
+- Architecture and key files
+	- [app.py](app.py): all routes, auth, schedule CRUD, timeline/history snapshots, invitations, PDF/email helpers; reads/writes JSON under [site/data/](site/data/).
+	- [core.py](core.py): time parsing and normalization helpers, allocation/timing pipeline entrypoints; dynamically imports [1-Import-Time_per_work_per_rehearsal.py](1-Import-Time_per_work_per_rehearsal.py), [2-Orchestration_organisation.py](2-Orchestration_organisation.py), [3-Organised_rehearsal_with_time.py](3-Organised_rehearsal_with_time.py). Restart the app after editing these scripts. Optional [4 - Final Compile and PDF.py](4%20-%20Final%20Compile%20and%20PDF.py) for legacy XLSX flow.
+	- UI: templates in [templates/](templates/) (admin/edit/view/member), timeline drag/swap logic in [static/editor.js](static/editor.js); legacy timeline in [static/Retired/timeline_new.js](static/Retired/timeline_new.js).
 
-**Data model and storage**
-- Schedules are individual JSON files in [site/data/schedules/](site/data/schedules/) with shape:
-  - `id`, `ensemble_id`, `name`, `status`, `G` (grid minutes), `works`, `rehearsals`, `allocation`, `schedule`, `timed`, `timed_history`, `audit_log`, `last_notified_at`, `generated_at`.
-  - Column order persisted via `works_cols` / `rehearsals_cols`; `G` defaults to `G_MINUTES` env (5).
-- `default_schedule_id.txt` points at the active schedule; legacy `project.json` is auto-migrated.
-- Auth data in [site/data/users.json](site/data/users.json), ensembles/memberships/invitations alongside.
+- Data layout
+	- JSON storage under [site/data/](site/data/); schedules live in [site/data/schedules/](site/data/schedules/). Active schedule id in [site/data/default_schedule_id.txt](site/data/default_schedule_id.txt); legacy [project.json](project.json) is auto-migrated on first run.
+	- Schedule shape: `id`, `ensemble_id`, `name`, `status`, `G`, `works`, `rehearsals`, `allocation`, `schedule`, `timed`, `timed_history`, `audit_log`, `last_notified_at`, `generated_at`, plus column order fields like `rehearsals_cols`/`works_cols`.
+	- Users, ensembles, memberships, invitations stored alongside (e.g., [site/data/users.json](site/data/users.json)).
 
-**Persistence rules**
-- Always read via `read_json()` and write via `write_json_atomic()` to avoid corruption; JSON serialization uses `_json_safe` to handle pandas/numpy types.
-- When mutating rehearsals, keep helper fixes: `ensure_include_in_allocation_column`, `ensure_section_column`, `ensure_event_type_column`, `normalize_section_column`, `sanitize_df_records`, `clean_timed_data`.
-- `make_new_schedule()` seeds audit/log/timed_history fields; `add_audit_entry` snapshots timeline edits (last 50 kept).
+- Persistence invariants
+	- Always load via `read_json` and save with `write_json_atomic` to avoid corruption; serialization relies on `_json_safe` for pandas/numpy types.
+	- When touching rehearsal/timed rows, run the normalizers: `ensure_include_in_allocation_column`, `ensure_section_column`, `ensure_event_type_column`, `normalize_section_column`, `sanitize_df_records`, `clean_timed_data`. These keep sections/defaults consistent and avoid NaN/inf.
+	- `make_new_schedule` seeds audit/log/timed_history fields; `add_audit_entry` keeps the audit list trimmed to `AUDIT_LOG_LIMIT`.
 
-**Compute pipeline**
-- Upload/import works + rehearsals → `prepare_works_df`/`prepare_rehearsals_df` normalize rows (durations, truthy flags, start/end times, break minutes, section defaults) → external scripts compute allocation/player load/grouping → `generate_schedule` orders bundles by player load + orchestration similarity → `generate_timed_schedule` assigns concrete times.
-- Timeline edits: PUT `/api/s/<id>/timed_edit` sends full `timed` array + action description; server snapshots to `timed_history`, cleans sections, and writes JSON atomically. No multi-editor conflict handling (last write wins).
+- Compute and timing pipeline
+	- Import works/rehearsals → `prepare_works_df` / `prepare_rehearsals_df` (duration parsing, truthy flags, start/end/break minutes, section defaults) → external scripts compute allocation/player load/grouping → `generate_schedule` orders bundles → `generate_timed_schedule` assigns concrete times. Grid minutes default to `G_MINUTES` env (5).
+	- Timeline edits: PUT `/api/s/<id>/timed_edit` posts the full `timed` array plus action description; server snapshots to `timed_history`, cleans sections, and writes atomically. Last write wins—no merge safety.
 
-**Auth/roles and membership**
-- Roles: admins manage schedules, ensembles, invitations; members view published schedules for ensembles they belong to.
-- `ADMIN_EMAIL` auto-promotes on first login. Members can be pending; admins invite via `/admin/ensembles/<id>/invitations` (codes stored in invitations.json, can disable/expire).
-- Published schedules are visible to members; drafts only to admins. `/my` shows member calendar and can export PDF via ReportLab.
+- Auth and membership
+	- Roles: admins manage schedules/ensembles/invitations; members can view published schedules for their ensembles.
+	- `ADMIN_EMAIL` auto-promotes on first login. Invitations live in [site/data/invitations.json](site/data/invitations.json); codes can be disabled/expired. Draft schedules visible only to admins; published ones to members. `/my` serves member dashboard/calendar and PDF export.
 
-**Notifications/Email**
-- Brevo SMTP/API optional (`BREVO_*` env). Audit log cap via `AUDIT_LOG_LIMIT`. If PDF or email features change, check member-facing routes near the bottom of [app.py](app.py).
+- Notifications and PDFs
+	- Brevo email optional via `BREVO_*` env; defaults come from `BREVO_FROM_EMAIL` and `BREVO_PRIMARY_TO`. BCC mode on by default; plain text body auto-derived from HTML. Audit log cap set by `AUDIT_LOG_LIMIT`.
+	- PDF generation uses ReportLab in routes near the bottom of [app.py](app.py); ensure any new fields are added to rendered tables.
 
-**Running locally**
-- Env hints: `DATA_DIR`, `SECRET_KEY`, `EDIT_TOKEN` (admin auth token for API endpoints), `ADMIN_EMAIL`, `G_MINUTES`, `BREVO_*`, `PROJECT_FILE` (legacy), `PORT`.
-- Start dev server: `EDIT_TOKEN=... flask --app app run --debug` (or `python app.py`); `use_reloader=False` avoids watcher overload. Data persists under DATA_DIR; ensure schedules dir exists.
+- Local development
+	- Env hints: `DATA_DIR`, `SECRET_KEY`, `EDIT_TOKEN` (admin token for API routes), `ADMIN_EMAIL`, `G_MINUTES`, `BREVO_*`, `PROJECT_FILE`, `PORT`.
+	- Start: `EDIT_TOKEN=... flask --app app run --debug` (or `python app.py`); prefer `use_reloader=False` if imports are heavy. DATA_DIR is created automatically; schedules dir must exist.
+	- External script changes require an app restart to be re-imported.
 
-**Working style**
-- Keep JSON schemas backward-compatible; migration helpers add missing columns/fields on load.
-- Prefer pandas-aware utilities for time/duration parsing and truthy flags; avoid raw string math.
-- When extending compute, add outputs to schedule dict and persist via `save_schedule()`; restart to reload external script changes.
+- CI/CD
+	- GitHub Actions workflow [main_rehearsalschedule.yml](.github/workflows/main_rehearsalschedule.yml) builds on Ubuntu with Python 3.12, installs `requirements.txt`, uploads artifact (excludes `antenv/`), then deploys to Azure Web App via `azure/webapps-deploy`. Oryx build is enabled by default on App Service unless disabled in app settings.
+
+- Patterns and gotchas
+	- Keep JSON schema backward-compatible; migrations on load fill missing columns/fields.
+	- Avoid raw string arithmetic; use pandas helpers for times and truthy parsing in `core.py`.
+	- No concurrency control on timeline edits—prefer single editor or explicit snapshots (`timed_history`) when automating.

@@ -32,6 +32,14 @@
         </div>
       </div>
       <div id="adminNotifyRecipientList" style="max-height:320px; overflow-y:auto; margin-bottom:12px; border:1px solid #e5e7eb; padding:8px; border-radius:4px;"></div>
+      <div style="margin-bottom:12px; display:flex; flex-direction:column; gap:6px;">
+        <label class="small">Add custom recipient</label>
+        <div style="display:flex; gap:8px; align-items:center;">
+          <input type="email" id="adminNotifyCustomEmail" placeholder="name@example.com" style="flex:1; padding:8px; border:1px solid #d1d5db; border-radius:4px;">
+          <button class="btn secondary" type="button" onclick="addAdminCustomRecipient()">Add</button>
+        </div>
+        <div id="adminCustomRecipientChips" class="small" style="display:flex; gap:6px; flex-wrap:wrap;"></div>
+      </div>
       <div style="display:flex; flex-direction:column; gap:8px; margin-bottom:12px;">
         <div>
           <div class="small" style="margin-bottom:4px;">Subject</div>
@@ -274,6 +282,7 @@
       let adminLastDefaultSubject = '';
       let adminLastDefaultBody = '';
       let adminScheduleLink = '';
+      let adminCustomRecipients = [];
     
       function closeAdminNotifyModal() {
         const modal = document.getElementById('adminNotifyModal');
@@ -282,6 +291,8 @@
     
       async function openAdminNotifyModal(scheduleId) {
         adminNotifyScheduleId = scheduleId;
+        adminCustomRecipients = [];
+        renderAdminCustomRecipientChips();
         const modal = document.getElementById('adminNotifyModal');
         const list = document.getElementById('adminNotifyRecipientList');
         const subjectInput = document.getElementById('adminNotifySubject');
@@ -351,6 +362,42 @@
           cb.checked = !!selectAll;
         });
       }
+
+      function renderAdminCustomRecipientChips() {
+        const chips = document.getElementById('adminCustomRecipientChips');
+        if (!chips) return;
+        if (!adminCustomRecipients.length) {
+          chips.innerHTML = '<span style="color:#6b7280;">No custom recipients added.</span>';
+          return;
+        }
+        chips.innerHTML = adminCustomRecipients.map(email => `
+          <span style="display:inline-flex; align-items:center; gap:6px; background:#e5e7eb; padding:4px 8px; border-radius:12px;">
+            <span>${email}</span>
+            <button type="button" style="border:none; background:none; cursor:pointer; color:#ef4444;" aria-label="Remove ${email}" onclick="removeAdminCustomRecipient('${email}')">×</button>
+          </span>
+        `).join('');
+      }
+
+      function addAdminCustomRecipient() {
+        const input = document.getElementById('adminNotifyCustomEmail');
+        if (!input) return;
+        const email = (input.value || '').trim();
+        if (!email) return;
+        if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) {
+          alert('Please enter a valid email address');
+          return;
+        }
+        if (!adminCustomRecipients.includes(email)) {
+          adminCustomRecipients.push(email);
+          renderAdminCustomRecipientChips();
+        }
+        input.value = '';
+      }
+
+      function removeAdminCustomRecipient(email) {
+        adminCustomRecipients = adminCustomRecipients.filter(e => e !== email);
+        renderAdminCustomRecipientChips();
+      }
     
       function formatAdminSelection(tag) {
         const ta = document.getElementById('adminNotifyBody');
@@ -389,7 +436,8 @@
           return;
         }
         const checked = Array.from(document.querySelectorAll('.admin-notify-recipient:checked')).map(cb => cb.value);
-        if (!checked.length) {
+        const recipients = [...checked, ...adminCustomRecipients].filter(Boolean);
+        if (!recipients.length) {
           alert('Select at least one recipient.');
           return;
         }
@@ -403,7 +451,7 @@
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             credentials: 'same-origin',
-            body: JSON.stringify({ subject, body, recipients: checked })
+            body: JSON.stringify({ subject, body, recipients })
           });
           const result = await readJsonOrThrow(res);
           if (!res.ok || !result.ok) {

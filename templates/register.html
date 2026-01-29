@@ -47,7 +47,13 @@
 
       <div style="margin-bottom:12px;">
         <label class="small">Instrument (optional)</label>
-        <input type="text" name="instrument" style="width:100%; padding:10px; margin-top:6px;" placeholder="e.g., Violin">
+        <select name="instrument" style="width:100%; padding:10px; margin-top:6px;">
+          <option value="">-- select --</option>
+          {% for inst in instrument_options %}
+            <option value="{{ inst }}">{{ inst }}</option>
+          {% endfor %}
+        </select>
+        <div class="small" style="color:#6b7280; margin-top:4px;">Includes orchestral and brass band instruments; choose "Other / Not listed" if needed.</div>
       </div>
 
       <div style="margin-bottom:12px;">
