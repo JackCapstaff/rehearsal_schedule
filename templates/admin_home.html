@@ -32,6 +32,7 @@
             <span class="small">({{ e.id }})</span>
           </div>
 
+          <a class="btn secondary" href="{{ url_for('admin_view_invitations', ensemble_id=e.id) }}">Invitations</a>
           <a class="btn secondary" href="{{ url_for('admin_view_concerts', ensemble_id=e.id) }}">Concerts</a>
 
           <form method="post" action="{{ url_for('admin_rename_ensemble', ensemble_id=e.id) }}" style="display:flex; gap:8px;">
@@ -78,6 +79,11 @@
             <div style="display:flex; gap:8px; flex-wrap:wrap;">
               <a class="btn secondary" href="{{ url_for('admin_edit_schedule', schedule_id=s.id) }}">Edit</a>
               <a class="btn secondary" href="{{ url_for('schedule_view', schedule_id=s.id) }}">View</a>
+
+              <button class="btn secondary" onclick="document.getElementById('upload-complete-schedule-{{ s.id }}').click();">Upload Complete Schedule</button>
+              <form id="upload-complete-schedule-form-{{ s.id }}" style="display:none;">
+                <input type="file" id="upload-complete-schedule-{{ s.id }}" accept=".xlsx" onchange="handleCompleteScheduleUpload('{{ s.id }}', this.files[0])">
+              </form>
 
               {% if s.status == "draft" %}
                 <form method="post" action="{{ url_for('admin_set_schedule_status', schedule_id=s.id) }}">
@@ -190,6 +196,36 @@
   </div>
 
   <script>
+    async function handleCompleteScheduleUpload(scheduleId, file) {
+      if (!file) return;
+      
+      const formData = new FormData();
+      formData.append('file', file);
+      
+      try {
+        const response = await fetch(`/api/s/${scheduleId}/import_complete_schedule`, {
+          method: 'POST',
+          body: formData,
+          credentials: 'same-origin'
+        });
+        
+        if (response.ok) {
+          const result = await response.json();
+          alert(`Success! Uploaded ${result.rehearsals_rows} rehearsals and ${result.timed_rows} scheduled works.`);
+          location.reload();
+        } else {
+          const error = await response.json();
+          alert('Error: ' + (error.error || 'Failed to upload'));
+        }
+      } catch (error) {
+        console.error('Error:', error);
+        alert('Failed to upload: ' + error.message);
+      }
+      
+      // Reset file input
+      document.getElementById(`upload-complete-schedule-form-${scheduleId}`).reset();
+    }
+
     async function cleanupDuplicateConcerts() {
       if (!confirm('This will remove all duplicate auto-generated concerts. Continue?')) {
         return;

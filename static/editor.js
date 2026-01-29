@@ -309,8 +309,8 @@ function renderTable(containerId, rows, cols, onChange, opts = {}) {
   scrollDiv.appendChild(scrollTable);
   wrap.appendChild(scrollDiv);
 
-  container.appendChild(wrap);
-}
+   container.appendChild(wrap);
+ }
 
 // Ensure saveInputs handles the token correctly
 async function saveInputs(clearComputed = false) {
@@ -1471,6 +1471,7 @@ let TIMELINE_STATE = {
   isDragging: false,
   previewValid: false,
   previewTimeline: null,
+  selectedIds: [],
 };
 
 // History management for undo/redo
@@ -1499,6 +1500,40 @@ function minutesToTimeString(minutes) {
   const h = Math.floor(minutes / 60) % 24;
   const m = minutes % 60;
   return String(h).padStart(2, "0") + ":" + String(m).padStart(2, "0") + ":00";
+}
+
+// Selection helpers
+function isItemSelected(id) {
+  return TIMELINE_STATE.selectedIds.includes(id);
+}
+
+function selectSingle(id) {
+  TIMELINE_STATE.selectedIds = [id];
+}
+
+function toggleSelection(id) {
+  if (isItemSelected(id)) {
+    TIMELINE_STATE.selectedIds = TIMELINE_STATE.selectedIds.filter(x => x !== id);
+  } else {
+    TIMELINE_STATE.selectedIds = [...TIMELINE_STATE.selectedIds, id];
+  }
+}
+
+function clearSelection() {
+  TIMELINE_STATE.selectedIds = [];
+}
+
+function updateSelectionStyles() {
+  document.querySelectorAll('.timeline-item').forEach(el => {
+    const id = el.dataset.itemId || el.id;
+    if (isItemSelected(id)) {
+      el.style.outline = "3px solid #2563eb";
+      el.style.boxShadow = "0 0 0 2px rgba(37,99,235,0.2)";
+    } else {
+      el.style.outline = "";
+      el.style.boxShadow = "";
+    }
+  });
 }
 
 function safe_int(val, def) {
@@ -2088,6 +2123,9 @@ function renderTimelineEditor() {
     contentEl.innerHTML = "";
     contentEl.appendChild(gridDiv);
 
+    // Re-apply selection highlights after re-render
+    updateSelectionStyles();
+
     // Update history buttons
     updateHistoryButtons();
 
@@ -2126,11 +2164,16 @@ function renderRehearsalColumn(rehearsalNum, works) {
     const rehearsalData = STATE.rehearsals.find(r => parseInt(r.Rehearsal) === rehearsalNum);
     if (rehearsalData) {
       eventType = rehearsalData['Event Type'] || 'Rehearsal';
+      console.log(`[TIMELINE] Rehearsal ${rehearsalNum} Event Type: "${eventType}"`);
     }
   }
   
-  switch (eventType) {
+  // Normalize event type (trim whitespace)
+  const eventTypeNormalized = eventType.trim();
+  
+  switch (eventTypeNormalized) {
     case 'Concert':
+    case 'Contest':
       headerBgColor = "#dbeafe";
       headerBorderColor = "#0284c7";
       headerTextColor = "#0c4a6e";
@@ -2149,22 +2192,41 @@ function renderRehearsalColumn(rehearsalNum, works) {
   const header = document.createElement("div");
   header.style.cssText = `padding:12px; background:${headerBgColor}; border-bottom:2px solid ${headerBorderColor}; border-left:4px solid ${headerBorderColor}; font-weight:600; text-align:center; display:flex; justify-content:space-between; align-items:center; gap:8px;`;
   
+  // Add double-click handler to header for opening edit modal
+  header.ondblclick = () => openRehearsalEditModal(rehearsalNum);
+  header.style.cursor = "pointer";
+  header.title = "Double-click to edit event details";
+  
   const title = document.createElement("span");
   
   // Determine title text based on event type
   let titleText = `Rehearsal ${rehearsalNum}`;
-  if (eventType === 'Concert') {
+  if (eventTypeNormalized === 'Concert') {
     titleText = 'Concert';
-  } else if (eventType === 'Sectional') {
-    // Try to get ensemble name from schedule metadata or rehearsal data
-    let ensembleName = '';
+  } else if (eventTypeNormalized === 'Contest') {
+    titleText = 'Contest';
+  } else if (eventTypeNormalized === 'Sectional') {
+    // Get section name and work from rehearsal data
+    let sectionName = '';
+    let workName = '';
     if (STATE.rehearsals && Array.isArray(STATE.rehearsals)) {
       const rehearsalData = STATE.rehearsals.find(r => parseInt(r.Rehearsal) === rehearsalNum);
-      if (rehearsalData && rehearsalData['Section']) {
-        ensembleName = rehearsalData['Section'];
+      if (rehearsalData) {
+        sectionName = rehearsalData['Section'] || '';
+        workName = rehearsalData['work'] || '';
       }
     }
-    titleText = ensembleName ? `Sectional` : 'Sectional';
+    
+    // Build title: "Sectional: Section - Work" or just "Sectional" if no details
+    if (sectionName && workName) {
+      titleText = `Sectional: ${sectionName} - ${workName}`;
+    } else if (sectionName) {
+      titleText = `Sectional: ${sectionName}`;
+    } else if (workName) {
+      titleText = `Sectional - ${workName}`;
+    } else {
+      titleText = 'Sectional';
+    }
   }
   
   title.textContent = titleText;
@@ -2190,10 +2252,17 @@ function renderRehearsalColumn(rehearsalNum, works) {
   editBtn.style.cssText = "padding:4px 12px; background:#f59e0b; color:white; border:none; border-radius:4px; font-size:12px; cursor:pointer; font-weight:500; white-space:nowrap;";
   editBtn.addEventListener("click", () => openRehearsalEditModal(rehearsalNum));
   
+  const deleteBtn = document.createElement("button");
+  deleteBtn.textContent = "🗑️";
+  deleteBtn.style.cssText = "padding:4px 10px; background:#dc3545; color:white; border:none; border-radius:4px; font-size:14px; cursor:pointer; font-weight:bold; white-space:nowrap;";
+  deleteBtn.title = "Delete this rehearsal";
+  deleteBtn.addEventListener("click", () => deleteRehearsal(rehearsalNum));
+  
   header.appendChild(title);
   header.appendChild(viewBtn);
   header.appendChild(addBtn);
   header.appendChild(editBtn);
+  header.appendChild(deleteBtn);
   column.appendChild(header);
 
   // Timeline container (scrollable)
@@ -2286,6 +2355,7 @@ function renderTimelineItem(item, rehearsalNum, bounds) {
         const eventType = rehearsalData['Event Type'] || 'Rehearsal';
         switch (eventType) {
           case 'Concert':
+          case 'Contest':
             bgColor = '#06b6d4';  // Cyan/turquoise
             borderColor = '#0891b2';
             break;
@@ -2319,6 +2389,11 @@ function renderTimelineItem(item, rehearsalNum, bounds) {
     flex-direction:column;
     transition: filter 0.2s, opacity 0.2s;
   `;
+
+  if (isItemSelected(item.id)) {
+    itemEl.style.outline = "3px solid #2563eb";
+    itemEl.style.boxShadow = "0 0 0 2px rgba(37,99,235,0.2)";
+  }
 
   // Top resize handle
   const resizeTop = document.createElement("div");
@@ -2553,10 +2628,35 @@ function attachItemEventHandlers(itemEl, item, rehearsalNum, content, resizeTop,
   let startTop = 0;
   let startDuration = 0;
 
+  // Click to manage selection without dragging
+  content.addEventListener("click", (e) => {
+    // If we already dragged, ignore
+    if (TIMELINE_STATE.isDragging) return;
+    if (e.ctrlKey || e.metaKey) {
+      toggleSelection(item.id);
+    } else if (!isItemSelected(item.id)) {
+      selectSingle(item.id);
+    }
+    updateSelectionStyles();
+  });
+
   // MOVE: MouseDown on content
   const onMoveStart = (e) => {
     e.preventDefault();
     e.stopPropagation();
+
+    // Selection handling: ctrl/cmd to toggle, otherwise keep existing multi-select if this item is already selected
+    if (e.ctrlKey || e.metaKey) {
+      toggleSelection(item.id);
+    } else if (!isItemSelected(item.id)) {
+      selectSingle(item.id);
+    }
+
+    // Restrict selection to this rehearsal for dragging
+    const rehearsalItems = timedToTimelineItems(STATE.timed, rehearsalNum);
+    const allowedIds = new Set(rehearsalItems.map(it => it.id));
+    TIMELINE_STATE.selectedIds = TIMELINE_STATE.selectedIds.filter(id => allowedIds.has(id));
+    updateSelectionStyles();
 
     TIMELINE_STATE.isDragging = true;
     TIMELINE_STATE.draggingItemId = item.id;
@@ -2602,47 +2702,67 @@ function attachItemEventHandlers(itemEl, item, rehearsalNum, content, resizeTop,
     const offsetMins = snappedTop / TIMELINE_CONFIG.pixelsPerMinute;
     const targetTime = addMinutes(bounds.startTime, offsetMins);
     
-    // Find nearest insertion point between works
     const timeline = timedToTimelineItems(STATE.timed, rehearsalNum);
-    const insertionPoints = [bounds.startTime];
-    
-    timeline.forEach(it => {
-      if (it.id !== item.id) {
-        const endTime = addMinutes(it.start_time, it.duration_mins);
-        insertionPoints.push(endTime);
-      }
-    });
-    
-    // Find closest insertion point
-    const targetMins = timeStringToMinutes(targetTime);
-    let closestPoint = insertionPoints[0];
-    let closestDiff = Math.abs(timeStringToMinutes(closestPoint) - targetMins);
-    
-    insertionPoints.forEach(point => {
-      const diff = Math.abs(timeStringToMinutes(point) - targetMins);
-      if (diff < closestDiff) {
-        closestDiff = diff;
-        closestPoint = point;
-      }
-    });
-    
-    // Update drop indicator to show insertion point
-    updateDropIndicator(rehearsalNum, closestPoint);
+    const selectedIds = TIMELINE_STATE.selectedIds.length ? TIMELINE_STATE.selectedIds : [item.id];
+    const selectedItems = timeline.filter(it => selectedIds.includes(it.id));
 
-    // Preview the move using closestPoint as target
-    const draggedItem = timeline.find(i => i.id === item.id);
+    // Multi-move: shift selected block together by delta
+    if (selectedItems.length > 1) {
+      const deltaMins = Math.round((snappedTop - startTop) / (TIMELINE_CONFIG.G * TIMELINE_CONFIG.pixelsPerMinute)) * TIMELINE_CONFIG.G;
+      const shifted = selectedItems.map(si => ({
+        ...si,
+        start_time: addMinutes(si.start_time, deltaMins),
+      }));
+      const others = timeline.filter(it => !selectedIds.includes(it.id));
+      const merged = [...others, ...shifted].sort((a, b) => timeStringToMinutes(a.start_time) - timeStringToMinutes(b.start_time));
+      const compacted = compactTimeline(merged, rehearsalNum);
+      const validation = validateTimeline(compacted, rehearsalNum);
 
-    if (draggedItem) {
-      const result = calculatePushResult(draggedItem, closestPoint, timeline, rehearsalNum);
+      // Drop indicator at earliest shifted start
+      const earliest = shifted.reduce((min, si) => Math.min(min, timeStringToMinutes(si.start_time)), Infinity);
+      updateDropIndicator(rehearsalNum, addMinutes(bounds.startTime, earliest - timeStringToMinutes(bounds.startTime)));
 
-      if (result.valid) {
+      if (validation.valid) {
         itemEl.style.border = "2px solid #22c55e";
         TIMELINE_STATE.previewValid = true;
-        TIMELINE_STATE.previewTimeline = result.timeline;
+        TIMELINE_STATE.previewTimeline = compacted;
       } else {
         itemEl.style.border = "2px solid #ef4444";
         TIMELINE_STATE.previewValid = false;
-        console.log("Invalid move:", result.errors);
+      }
+    } else {
+      // Single-item move (existing behavior)
+      const insertionPoints = [bounds.startTime];
+      timeline.forEach(it => {
+        if (it.id !== item.id) {
+          const endTime = addMinutes(it.start_time, it.duration_mins);
+          insertionPoints.push(endTime);
+        }
+      });
+      const targetMins = timeStringToMinutes(targetTime);
+      let closestPoint = insertionPoints[0];
+      let closestDiff = Math.abs(timeStringToMinutes(closestPoint) - targetMins);
+      insertionPoints.forEach(point => {
+        const diff = Math.abs(timeStringToMinutes(point) - targetMins);
+        if (diff < closestDiff) {
+          closestDiff = diff;
+          closestPoint = point;
+        }
+      });
+      updateDropIndicator(rehearsalNum, closestPoint);
+
+      const draggedItem = timeline.find(i => i.id === item.id);
+      if (draggedItem) {
+        const result = calculatePushResult(draggedItem, closestPoint, timeline, rehearsalNum);
+        if (result.valid) {
+          itemEl.style.border = "2px solid #22c55e";
+          TIMELINE_STATE.previewValid = true;
+          TIMELINE_STATE.previewTimeline = result.timeline;
+        } else {
+          itemEl.style.border = "2px solid #ef4444";
+          TIMELINE_STATE.previewValid = false;
+          console.log("Invalid move:", result.errors);
+        }
       }
     }
   };
@@ -3303,7 +3423,7 @@ function openRehearsalEditModal(rehearsalNum) {
   const includeInAllocation = rehearsalData && rehearsalData['Include in allocation'] ? rehearsalData['Include in allocation'] : 'Y';
   const eventType = rehearsalData && rehearsalData['Event Type'] ? rehearsalData['Event Type'] : 'Rehearsal';
   const section = rehearsalData && rehearsalData['Section'] ? rehearsalData['Section'] : 'Full Ensemble';
-  const isConcert = eventType === 'Concert';
+  const isConcert = eventType === 'Concert' || eventType === 'Contest';
   
   // For concerts, get concert data from STATE.concerts using concert_id from timed data
   let concertData = null;
@@ -3409,8 +3529,11 @@ function openRehearsalEditModal(rehearsalNum) {
       
       <div style="margin-bottom: 16px;">
         <label style="display: block; font-size: 14px; font-weight: 500; color: #374151; margin-bottom: 8px;">Programme</label>
-        <textarea id="editConcertProgramme" placeholder="Enter the concert programme..." style="width: 100%; padding: 10px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 14px; box-sizing: border-box; min-height: 100px; font-family: monospace;">${concertProgramme}</textarea>
-        <small style="color: #6b7280; display: block; margin-top: 4px;">Concert programme / pieces to be performed</small>
+        <div id="programmeSetsContainer" style="display: flex; flex-direction: column; gap: 12px;">
+          <!-- Sets will be added here dynamically -->
+        </div>
+        <button type="button" onclick="addProgrammeSet()" class="btn secondary" style="padding: 6px 12px; margin-top: 8px; font-size: 13px;">+ Add Set</button>
+        <small style="color: #6b7280; display: block; margin-top: 4px;">Add sets for the concert programme. Line breaks will be preserved.</small>
       </div>
       
       <div style="margin-bottom: 20px;">
@@ -3453,14 +3576,21 @@ function openRehearsalEditModal(rehearsalNum) {
           <option value="Rehearsal" ${eventType === 'Rehearsal' ? 'selected' : ''}>Rehearsal</option>
           <option value="Sectional" ${eventType === 'Sectional' ? 'selected' : ''}>Sectional</option>
           <option value="Concert" ${eventType === 'Concert' ? 'selected' : ''}>Concert</option>
+          <option value="Contest" ${eventType === 'Contest' ? 'selected' : ''}>Contest</option>
         </select>
-        <small style="color: #6b7280; display: block; margin-top: 4px;">Type of event (Rehearsal, Sectional, or Concert)</small>
+        <small style="color: #6b7280; display: block; margin-top: 4px;">Type of event (Rehearsal, Sectional, Concert, or Contest)</small>
       </div>
       
       <div style="margin-bottom: 16px;">
         <label style="display: block; font-size: 14px; font-weight: 500; color: #374151; margin-bottom: 8px;">Ensemble/Section</label>
         <input type="text" id="editSection" value="${section || 'Full Ensemble'}" placeholder="e.g., Cornets, Flutes, Full Ensemble" style="width: 100%; padding: 10px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 14px; box-sizing: border-box;">
         <small style="color: #6b7280; display: block; margin-top: 4px;">Which ensemble section performs this rehearsal</small>
+      </div>
+      
+      <div id="workFieldContainer" style="margin-bottom: 16px; display: none;">
+        <label style="display: block; font-size: 14px; font-weight: 500; color: #374151; margin-bottom: 8px;">Work</label>
+        <input type="text" id="editWork" value="${rehearsalData?.work || ''}" placeholder="e.g., Nimrod, The President" style="width: 100%; padding: 10px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 14px; box-sizing: border-box;">
+        <small style="color: #6b7280; display: block; margin-top: 4px;">Piece being rehearsed (for sectionals)</small>
       </div>
       
       <div style="margin-bottom: 16px;">
@@ -3485,6 +3615,21 @@ function openRehearsalEditModal(rehearsalNum) {
   overlay.appendChild(modal);
   document.body.appendChild(overlay);
   
+  // Add ESC key handler to close modal
+  const handleEscape = (e) => {
+    if (e.key === 'Escape') {
+      overlay.remove();
+    }
+  };
+  document.addEventListener('keydown', handleEscape);
+  
+  // Cleanup ESC handler when modal is removed
+  const originalRemove = overlay.remove.bind(overlay);
+  overlay.remove = () => {
+    document.removeEventListener('keydown', handleEscape);
+    originalRemove();
+  };
+  
   // Add Enter key handler
   const handleEnter = (e) => {
     if (e.key === 'Enter' && !e.shiftKey) {
@@ -3499,11 +3644,182 @@ function openRehearsalEditModal(rehearsalNum) {
   
   modal.addEventListener('keydown', handleEnter);
   
+  // Add event listener to show/hide work field based on event type (non-concert only)
+  if (!isConcert) {
+    const eventTypeSelect = document.getElementById('editEventType');
+    const workFieldContainer = document.getElementById('workFieldContainer');
+    
+    const updateWorkFieldVisibility = () => {
+      const selectedType = eventTypeSelect.value;
+      if (workFieldContainer) {
+        workFieldContainer.style.display = selectedType === 'Sectional' ? 'block' : 'none';
+      }
+    };
+    
+    if (eventTypeSelect) {
+      eventTypeSelect.addEventListener('change', updateWorkFieldVisibility);
+      // Initialize visibility
+      updateWorkFieldVisibility();
+    }
+  }
+  
+  // Initialize programme sets for concerts
+  if (isConcert) {
+    initializeProgrammeSets(concertProgramme);
+  }
+  
   // Focus appropriate input
   setTimeout(() => {
     const focusElement = isConcert ? document.getElementById('editConcertTitle') : document.getElementById('editDate');
     focusElement?.focus();
   }, 100);
+}
+
+/**
+ * Initialize programme sets from saved programme text
+ */
+// Parse programme text into sets without trimming any lines
+function parseProgrammeSets(programmeText) {
+  const normalized = (programmeText || '').replace(/\r\n/g, '\n');
+  const lines = normalized.split('\n');
+  const setRegex = /^Set\s+(\d+):?/i;
+  const sets = [];
+  let currentNum = null;
+  let currentLines = [];
+
+  lines.forEach((line) => {
+    const match = line.match(setRegex);
+    if (match) {
+      if (currentNum !== null) {
+        sets.push({ num: currentNum, content: currentLines.join('\n') });
+      }
+      currentNum = match[1];
+      currentLines = [];
+    } else {
+      // If no set header has been seen yet, assume Set 1
+      if (currentNum === null) currentNum = 1;
+      currentLines.push(line);
+    }
+  });
+
+  if (currentNum !== null) {
+    sets.push({ num: currentNum, content: currentLines.join('\n') });
+  }
+
+  // If nothing parsed, return a single set with the raw text
+  if (sets.length === 0) {
+    return [{ num: 1, content: normalized }];
+  }
+
+  return sets;
+}
+
+function initializeProgrammeSets(programmeText) {
+  const container = document.getElementById('programmeSetsContainer');
+  if (!container) return;
+
+  console.log('[INIT SETS] Programme text:', programmeText);
+  const parsedSets = parseProgrammeSets(programmeText);
+  console.log('[INIT SETS] Parsed sets:', parsedSets.map(s => ({ num: s.num, len: s.content.length })));
+
+  parsedSets.forEach((set, idx) => {
+    addProgrammeSet(set.num || idx + 1, set.content);
+  });
+}
+
+/**
+ * Add a new programme set
+ */
+function addProgrammeSet(setNumber, content = '') {
+  const container = document.getElementById('programmeSetsContainer');
+  if (!container) return;
+  
+  // Determine set number if not provided
+  if (!setNumber) {
+    const existingSets = container.querySelectorAll('.programme-set');
+    setNumber = existingSets.length + 1;
+  }
+  
+  const setDiv = document.createElement('div');
+  setDiv.className = 'programme-set';
+  setDiv.style.cssText = 'border: 1px solid #d1d5db; border-radius: 6px; padding: 12px; background: #f9fafb;';
+  
+  setDiv.innerHTML = `
+    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+      <label style="font-weight: 500; color: #374151; font-size: 13px;">Set ${setNumber}</label>
+      <button type="button" onclick="removeProgrammeSet(this)" class="btn secondary" style="padding: 4px 8px; font-size: 12px; background: #ef4444; color: white;">Remove</button>
+    </div>
+    <textarea class="programme-set-content" placeholder="Enter pieces for this set, one per line..." style="width: 100%; padding: 8px; border: 1px solid #d1d5db; border-radius: 4px; font-size: 13px; box-sizing: border-box; min-height: 80px; font-family: monospace; resize: vertical;"></textarea>
+  `;
+  
+  // Set textarea content after creating element to preserve special characters
+  const textarea = setDiv.querySelector('.programme-set-content');
+  if (textarea) {
+    textarea.value = content;
+  }
+  
+  container.appendChild(setDiv);
+  
+  // Renumber all sets
+  renumberProgrammeSets();
+}
+
+/**
+ * Remove a programme set
+ */
+function removeProgrammeSet(button) {
+  const container = document.getElementById('programmeSetsContainer');
+  if (!container) return;
+  
+  const setDiv = button.closest('.programme-set');
+  if (setDiv) {
+    setDiv.remove();
+    renumberProgrammeSets();
+    
+    // If no sets left, add an empty one
+    const remainingSets = container.querySelectorAll('.programme-set');
+    if (remainingSets.length === 0) {
+      addProgrammeSet(1, '');
+    }
+  }
+}
+
+/**
+ * Renumber all programme sets
+ */
+function renumberProgrammeSets() {
+  const container = document.getElementById('programmeSetsContainer');
+  if (!container) return;
+  
+  const sets = container.querySelectorAll('.programme-set');
+  sets.forEach((set, idx) => {
+    const label = set.querySelector('label');
+    if (label) {
+      label.textContent = `Set ${idx + 1}`;
+    }
+  });
+}
+
+/**
+ * Collect all programme sets into formatted text
+ */
+function collectProgrammeSets() {
+  const container = document.getElementById('programmeSetsContainer');
+  if (!container) return '';
+  
+  const sets = container.querySelectorAll('.programme-set');
+  const parts = [];
+  
+  sets.forEach((set, idx) => {
+    const textarea = set.querySelector('.programme-set-content');
+    // Do not trim so we keep intentional blank lines
+    const content = textarea?.value || '';
+    if (content) {
+      parts.push(`Set ${idx + 1}:\n${content}`);
+    }
+  });
+  
+  return parts.join('\n\n');
 }
 
 /**
@@ -3516,6 +3832,7 @@ async function saveRehearsalEditFromModal(rehearsalNum) {
   const includeInput = document.getElementById('editIncludeInAllocation');
   const eventTypeInput = document.getElementById('editEventType');
   const sectionInput = document.getElementById('editSection');
+  const workInput = document.getElementById('editWork');
   
   if (!dateInput) return;
   
@@ -3525,8 +3842,9 @@ async function saveRehearsalEditFromModal(rehearsalNum) {
   const newIncludeInAllocation = includeInput?.value || 'Y';
   const newEvent = eventTypeInput?.value || 'Rehearsal';
   const newSection = sectionInput?.value.trim() || 'Full Ensemble';
+  const newWork = workInput?.value.trim() || '';
   
-  console.log("Save form values - Date:", newDate, "Start:", newStartTime, "End:", newEndTime, "Include:", newIncludeInAllocation, "Event:", newEvent, "Section:", newSection);
+  console.log("Save form values - Date:", newDate, "Start:", newStartTime, "End:", newEndTime, "Include:", newIncludeInAllocation, "Event:", newEvent, "Section:", newSection, "Work:", newWork);
   
   try {
     // Call API to update rehearsal details - apiBase already includes /api/s/{scheduleId}
@@ -3539,9 +3857,10 @@ async function saveRehearsalEditFromModal(rehearsalNum) {
       end_time: newEndTime,
       include_in_allocation: newIncludeInAllocation,
       event: newEvent,
-      section: newSection
+      section: newSection,
+      work: newWork
     };
-    console.log("Payload being sent:", payloadBody);
+    console.log("Payload being sent:", JSON.parse(JSON.stringify(payloadBody)));
     
     const res = await fetch(url, {
       method: "PUT",
@@ -3592,7 +3911,7 @@ async function saveConcertEditFromModal(rehearsalNum) {
   const time = timeInput?.value.trim() || '';
   const venue = venueInput?.value.trim() || '';
   const uniform = uniformInput?.value.trim() || '';
-  const programme = programmeInput?.value.trim() || '';
+  const programme = collectProgrammeSets();
   const otherInfo = otherInfoInput?.value.trim() || '';
   
   try {
@@ -4242,6 +4561,133 @@ function toggleHistoryPanel() {
   }
 }
 
+// --- DELETE REHEARSAL FUNCTIONS ---
+
+/**
+ * Delete a rehearsal, checking for associated concerts first
+ */
+async function deleteRehearsal(rehearsalNum) {
+  try {
+    // First, check if there are concerts associated with this rehearsal
+    const url = `${apiBase()}/rehearsal/${rehearsalNum}/concerts`;
+    const res = await fetch(url, {
+      method: "GET",
+      headers: { "Content-Type": "application/json" },
+      credentials: "same-origin"
+    });
+    
+    if (!res.ok) {
+      throw new Error("Failed to fetch concert data");
+    }
+    
+    const data = await res.json();
+    const concerts = data.concerts || [];
+    
+    if (concerts.length > 0) {
+      // Show modal to ask about concert deletion
+      showConcertSelectionModal(rehearsalNum, concerts);
+    } else {
+      // No concerts, just confirm deletion
+      if (confirm(`Delete Rehearsal ${rehearsalNum}? This cannot be undone.`)) {
+        await performRehearsalDeletion(rehearsalNum, []);
+      }
+    }
+  } catch (err) {
+    console.error("Error checking for concerts:", err);
+    alert("Error: " + err.message);
+  }
+}
+
+/**
+ * Show modal to select which concerts to delete along with the rehearsal
+ */
+function showConcertSelectionModal(rehearsalNum, concerts) {
+  const overlay = document.createElement("div");
+  overlay.id = "concertSelectionModalOverlay";
+  overlay.style.cssText = `
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: rgba(0,0,0,0.5);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 10000;
+  `;
+  
+  const modal = document.createElement("div");
+  modal.style.cssText = `
+    background: white;
+    border-radius: 8px;
+    padding: 24px;
+    max-width: 500px;
+    width: 90%;
+    box-shadow: 0 20px 25px -5px rgba(0,0,0,0.1);
+  `;
+  
+  const concertCheckboxes = concerts.map(c => `
+    <div style="padding: 8px 0;">
+      <label style="display: flex; align-items: center; gap: 8px; cursor: pointer;">
+        <input type="checkbox" value="${c.id}" class="concert-checkbox" checked style="width: 18px; height: 18px; cursor: pointer;">
+        <span style="font-size: 14px;">${c.title} (${c.date})</span>
+      </label>
+    </div>
+  `).join('');
+  
+  modal.innerHTML = `
+    <h3 style="margin: 0 0 16px 0; font-size: 18px; font-weight: 600;">Delete Rehearsal ${rehearsalNum}</h3>
+    <p style="margin: 0 0 16px 0; color: #6b7280; font-size: 14px;">
+      This rehearsal has ${concerts.length} associated concert(s). Do you want to delete them as well?
+    </p>
+    <div style="border: 1px solid #e5e7eb; border-radius: 6px; padding: 12px; margin-bottom: 20px; max-height: 200px; overflow-y: auto;">
+      ${concertCheckboxes}
+    </div>
+    <div style="display: flex; gap: 8px; justify-content: flex-end;">
+      <button onclick="document.getElementById('concertSelectionModalOverlay')?.remove()" class="btn secondary" style="padding: 8px 16px;">Cancel</button>
+      <button id="confirmDeleteWithConcerts" class="btn" style="padding: 8px 16px; background: #dc3545;">Delete</button>
+    </div>
+  `;
+  
+  overlay.appendChild(modal);
+  document.body.appendChild(overlay);
+  
+  document.getElementById('confirmDeleteWithConcerts').addEventListener('click', async () => {
+    const checkboxes = modal.querySelectorAll('.concert-checkbox:checked');
+    const concertIds = Array.from(checkboxes).map(cb => cb.value);
+    
+    overlay.remove();
+    await performRehearsalDeletion(rehearsalNum, concertIds);
+  });
+}
+
+/**
+ * Actually delete the rehearsal and selected concerts
+ */
+async function performRehearsalDeletion(rehearsalNum, concertIds) {
+  try {
+    const url = `${apiBase()}/rehearsal/${rehearsalNum}`;
+    const res = await fetch(url, {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json" },
+      credentials: "same-origin",
+      body: JSON.stringify({ concert_ids: concertIds })
+    });
+    
+    if (!res.ok) {
+      throw new Error(await res.text());
+    }
+    
+    // Refresh the page to show updated data
+    await refreshFromServer();
+    alert(`✓ Rehearsal ${rehearsalNum} deleted successfully`);
+  } catch (err) {
+    console.error("Error deleting rehearsal:", err);
+    alert("Error deleting rehearsal: " + err.message);
+  }
+}
+
 // --- GLOBAL EXPORTS ---
 window.initEditor = initEditor;
 window.uploadXlsx = uploadXlsx;
@@ -4262,5 +4708,6 @@ window.toggleAccordion = toggleAccordion;
 window.revertToHistory = revertToHistory;
 window.timelineUndo = timelineUndo;
 window.timelineRedo = timelineRedo;
+window.deleteRehearsal = deleteRehearsal;
 window.revertToOriginal = revertToOriginal;
 

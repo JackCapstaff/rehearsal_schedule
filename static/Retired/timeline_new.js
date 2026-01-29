@@ -729,12 +729,17 @@ function renderRehearsalColumn(rehearsalNum, works) {
     const rehearsalData = STATE.rehearsals.find(r => parseInt(r.Rehearsal) === rehearsalNum);
     if (rehearsalData) {
       eventType = rehearsalData['Event Type'] || 'Rehearsal';
+      console.log(`[TIMELINE] Rehearsal ${rehearsalNum} Event Type: "${eventType}"`);
     }
   }
   
+  // Normalize event type (case-insensitive)
+  const eventTypeNormalized = eventType.trim();
+  
   // Set colors based on event type
-  switch (eventType) {
+  switch (eventTypeNormalized) {
     case 'Concert':
+    case 'Contest':
       headerBgColor = "#dbeafe"; // Light blue
       headerBorderColor = "#0284c7"; // Dark blue
       headerTextColor = "#0c4a6e"; // Very dark blue
@@ -752,8 +757,8 @@ function renderRehearsalColumn(rehearsalNum, works) {
   
   header.style.cssText = `padding:12px; background:${headerBgColor}; border-bottom:2px solid ${headerBorderColor}; border-left:4px solid ${headerBorderColor}; display:flex; align-items:center; gap:8px; flex-wrap:nowrap; cursor:pointer;`;
   
-  // Different behavior for concerts vs other events
-  if (eventType === 'Concert') {
+  // Different behavior for concerts/contests vs other events
+  if (eventTypeNormalized === 'Concert' || eventTypeNormalized === 'Contest') {
     header.ondblclick = () => {
       // Get concert_id and redirect to admin page
       const rehearsalRow = STATE.rehearsals?.find(r => parseInt(r.Rehearsal) === rehearsalNum);
@@ -774,14 +779,14 @@ function renderRehearsalColumn(rehearsalNum, works) {
   
   const headerTitle = document.createElement("div");
   headerTitle.style.cssText = `font-weight:600; text-align:center; flex:1; min-width:0; color:${headerTextColor};`;
-  headerTitle.innerHTML = `${eventType} ${rehearsalNum}`;
+  headerTitle.innerHTML = `${eventTypeNormalized} ${rehearsalNum}`;
   header.appendChild(headerTitle);
   
   const editBtn = document.createElement("button");
-  editBtn.textContent = eventType === 'Concert' ? '🎵 Edit Concert' : '✎ Edit';
+  editBtn.textContent = (eventTypeNormalized === 'Concert' || eventTypeNormalized === 'Contest') ? '🎵 Edit Concert' : '✎ Edit';
   editBtn.style.cssText = "background:#3b82f6; color:white; border:none; border-radius:4px; padding:6px 12px; cursor:pointer; font-size:12px; font-weight:bold; flex-shrink:0; white-space:nowrap;";
   
-  if (eventType === 'Concert') {
+  if (eventTypeNormalized === 'Concert' || eventTypeNormalized === 'Contest') {
     editBtn.onclick = () => {
       const rehearsalRow = STATE.rehearsals?.find(r => parseInt(r.Rehearsal) === rehearsalNum);
       const concertId = rehearsalRow?.concert_id;
@@ -798,6 +803,17 @@ function renderRehearsalColumn(rehearsalNum, works) {
   }
   
   header.appendChild(editBtn);
+  
+  // Add delete button
+  const deleteBtn = document.createElement("button");
+  deleteBtn.textContent = '🗑️';
+  deleteBtn.style.cssText = "background:#dc3545; color:white; border:none; border-radius:4px; padding:6px 10px; cursor:pointer; font-size:14px; font-weight:bold; flex-shrink:0;";
+  deleteBtn.title = "Delete this rehearsal";
+  deleteBtn.onclick = (e) => {
+    e.stopPropagation();
+    deleteRehearsal(rehearsalNum);
+  };
+  header.appendChild(deleteBtn);
   
   column.appendChild(header);
 
@@ -1206,6 +1222,7 @@ function updateEditModalFields() {
   const startTimeField = document.getElementById('rehearsalStartTime')?.parentElement;
   const endTimeField = document.getElementById('rehearsalEndTime')?.parentElement;
   const sectionField = document.getElementById('rehearsalSection')?.parentElement;
+  const workField = document.getElementById('sectionalWorkField');
   const includeField = document.getElementById('rehearsalIncludeInAllocation')?.parentElement;
   const venueField = document.getElementById('rehearsalVenue')?.parentElement;
   const uniformField = document.getElementById('rehearsalUniform')?.parentElement;
@@ -1220,6 +1237,7 @@ function updateEditModalFields() {
     if (startTimeField) startTimeField.style.display = 'block';
     if (endTimeField) endTimeField.style.display = 'block';
     if (sectionField) sectionField.style.display = 'block';
+    if (workField) workField.style.display = 'none';
     if (includeField) includeField.style.display = 'block';
     if (venueField) venueField.style.display = 'none';
     if (uniformField) uniformField.style.display = 'none';
@@ -1232,6 +1250,7 @@ function updateEditModalFields() {
     if (startTimeField) startTimeField.style.display = 'none';
     if (endTimeField) endTimeField.style.display = 'none';
     if (sectionField) sectionField.style.display = 'none';
+    if (workField) workField.style.display = 'none';
     if (includeField) includeField.style.display = 'none';
     if (venueField) venueField.style.display = 'block';
     if (uniformField) uniformField.style.display = 'block';
@@ -1240,10 +1259,11 @@ function updateEditModalFields() {
     // Auto-set include in allocation to No for concerts
     if (includeSelect) includeSelect.value = 'No - Exclude (sectional/concert)';
   } else if (eventType === 'Sectional') {
-    // Sectional: show start/end time, section; hide include, venue, uniform
+    // Sectional: show start/end time, section, work; hide include, venue, uniform
     if (startTimeField) startTimeField.style.display = 'block';
     if (endTimeField) endTimeField.style.display = 'block';
     if (sectionField) sectionField.style.display = 'block';
+    if (workField) workField.style.display = 'block';
     if (includeField) includeField.style.display = 'none';
     if (venueField) venueField.style.display = 'none';
     if (uniformField) uniformField.style.display = 'none';
@@ -1265,6 +1285,7 @@ function openRehearsalEditModal(rehearsalNum) {
   const timedRow = rehearsalRows[0];
   const date = timedRow.Date || '';
   const section = timedRow.Section || 'Full Ensemble';
+  const work = timedRow.Work || timedRow.Title || '';
   
   // Try to find rehearsal data from STATE.rehearsals if available
   let startTime = '';
@@ -1336,6 +1357,12 @@ function openRehearsalEditModal(rehearsalNum) {
       <small style="color:#666; display:block; margin-top:4px;">Event end time</small>
     </div>
     
+    <div style="margin-bottom:16px;" id="sectionalWorkField">
+      <label style="font-weight:bold; display:block; margin-bottom:6px;">Work</label>
+      <input type="text" id="rehearsalWork" value="${work}" placeholder="e.g., Elgar Variations" style="width:100%; padding:8px; border:1px solid #d1d5db; border-radius:4px; box-sizing:border-box;">
+      <small style="color:#666; display:block; margin-top:4px;">Work being rehearsed (for sectionals)</small>
+    </div>
+    
     <div style="margin-bottom:16px;">
       <label style="font-weight:bold; display:block; margin-bottom:6px;">Section</label>
       <input type="text" id="rehearsalSection" value="${section}" placeholder="e.g., Full Ensemble, Violin 1" style="width:100%; padding:8px; border:1px solid #d1d5db; border-radius:4px; box-sizing:border-box;">
@@ -1384,6 +1411,7 @@ async function saveRehearsalEdit(rehearsalNum) {
   const startTimeInput = document.getElementById('rehearsalStartTime');
   const endTimeInput = document.getElementById('rehearsalEndTime');
   const sectionInput = document.getElementById('rehearsalSection');
+  const workInput = document.getElementById('rehearsalWork');
   const eventTypeSelect = document.getElementById('rehearsalEventType');
   const includeInAllocationSelect = document.getElementById('rehearsalIncludeInAllocation');
   const venueInput = document.getElementById('rehearsalVenue');
@@ -1396,6 +1424,7 @@ async function saveRehearsalEdit(rehearsalNum) {
   const newStartTime = startTimeInput?.value?.trim() || '';
   const newEndTime = endTimeInput?.value?.trim() || '';
   const newSection = sectionInput?.value?.trim() || 'Full Ensemble';
+  const newWork = workInput?.value?.trim() || '';
   const newEventType = eventTypeSelect?.value || 'Rehearsal';
   const newIncludeInAllocation = includeInAllocationSelect?.value || 'Yes - Include';
   const newVenue = venueInput?.value?.trim() || '';
@@ -1413,6 +1442,7 @@ async function saveRehearsalEdit(rehearsalNum) {
         start_time: newStartTime,
         end_time: newEndTime,
         section: newSection,
+        work: newWork,
         event_type: newEventType,
         include_in_allocation: newIncludeInAllocation,
         venue: newVenue,
@@ -1472,6 +1502,125 @@ async function reloadScheduleData() {
     console.error("Error reloading schedule data:", e);
   }
 }
+
+/**
+ * Delete a rehearsal
+ */
+async function deleteRehearsal(rehearsalNum) {
+  try {
+    const scheduleId = document.body.dataset.scheduleId;
+    
+    // First, fetch associated concerts
+    const concertsResponse = await fetch(`/api/s/${scheduleId}/rehearsal/${rehearsalNum}/concerts`);
+    if (!concertsResponse.ok) {
+      throw new Error('Failed to fetch associated concerts');
+    }
+    
+    const concertsData = await concertsResponse.json();
+    const associatedConcerts = concertsData.concerts || [];
+    
+    // If there are associated concerts, show selection modal
+    if (associatedConcerts.length > 0) {
+      return new Promise((resolve) => {
+        showConcertSelectionModal(rehearsalNum, associatedConcerts, async (selectedConcertIds) => {
+          await performRehearsalDeletion(scheduleId, rehearsalNum, selectedConcertIds);
+          resolve();
+        });
+      });
+    } else {
+      // No concerts, just confirm and delete
+      if (!confirm(`Are you sure you want to delete Rehearsal ${rehearsalNum}? This will permanently remove the rehearsal and all its works.`)) {
+        return;
+      }
+      await performRehearsalDeletion(scheduleId, rehearsalNum, []);
+    }
+  } catch (error) {
+    console.error('Error:', error);
+    alert('Failed to delete rehearsal: ' + error.message);
+  }
+}
+
+/**
+ * Show modal to select which concerts to delete
+ */
+function showConcertSelectionModal(rehearsalNum, concerts, onConfirm) {
+  const modal = document.createElement('div');
+  modal.style.cssText = 'position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.5); display:flex; align-items:center; justify-content:center; z-index:10000;';
+  modal.id = 'concertSelectionModal';
+  
+  const content = document.createElement('div');
+  content.style.cssText = 'background:white; border-radius:8px; padding:24px; max-width:500px; width:90%; max-height:80vh; overflow-y:auto; box-shadow:0 10px 40px rgba(0,0,0,0.3);';
+  
+  const concertsCheckboxes = concerts.map((concert, idx) => `
+    <div style="padding:10px; border:1px solid #e5e7eb; border-radius:4px; margin-bottom:8px; background:#f9fafb;">
+      <label style="display:flex; align-items:start; cursor:pointer;">
+        <input type="checkbox" id="concert-${concert.id}" value="${concert.id}" checked style="margin-right:10px; margin-top:4px;">
+        <div>
+          <div style="font-weight:bold;">${concert.title || 'Untitled Concert'}</div>
+          <div style="font-size:0.85rem; color:#666; margin-top:2px;">${concert.date || 'No date'}</div>
+        </div>
+      </label>
+    </div>
+  `).join('');
+  
+  content.innerHTML = `
+    <h3 style="margin-top:0; color:#dc3545;">⚠️ Delete Rehearsal ${rehearsalNum}</h3>
+    <p style="margin-bottom:16px;">This rehearsal has ${concerts.length} associated concert${concerts.length > 1 ? 's' : ''}. Would you like to delete ${concerts.length > 1 ? 'them' : 'it'} as well?</p>
+    <div style="margin-bottom:20px;">
+      ${concertsCheckboxes}
+    </div>
+    <div style="display:flex; gap:8px; justify-content:flex-end; border-top:1px solid #e5e7eb; padding-top:16px;">
+      <button onclick="document.getElementById('concertSelectionModal').remove()" class="btn secondary" style="padding:8px 16px;">Cancel</button>
+      <button id="confirmDeleteBtn" class="btn" style="padding:8px 16px; background:#dc3545;">Delete Selected</button>
+    </div>
+  `;
+  
+  modal.appendChild(content);
+  document.body.appendChild(modal);
+  
+  // Handle confirm button
+  document.getElementById('confirmDeleteBtn').onclick = () => {
+    const selectedConcertIds = concerts
+      .map(c => c.id)
+      .filter(id => document.getElementById(`concert-${id}`)?.checked);
+    
+    modal.remove();
+    onConfirm(selectedConcertIds);
+  };
+}
+
+/**
+ * Perform the actual rehearsal deletion
+ */
+async function performRehearsalDeletion(scheduleId, rehearsalNum, concertIdsToDelete) {
+  try {
+    const response = await fetch(`/api/s/${scheduleId}/rehearsal/${rehearsalNum}`, {
+      method: 'DELETE',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ concert_ids: concertIdsToDelete })
+    });
+    
+    if (response.ok) {
+      // Remove from STATE
+      STATE.rehearsals = STATE.rehearsals.filter(r => parseInt(r.Rehearsal) !== rehearsalNum);
+      STATE.timed = STATE.timed.filter(t => parseInt(t.Rehearsal) !== rehearsalNum);
+      STATE.schedule = STATE.schedule.filter(s => parseInt(s.Rehearsal) !== rehearsalNum);
+      
+      // Re-render timeline
+      renderTimelineEditor();
+      alert(`Rehearsal ${rehearsalNum} and ${concertIdsToDelete.length} concert(s) deleted successfully`);
+    } else {
+      const data = await response.json();
+      alert('Error deleting rehearsal: ' + (data.error || 'Unknown error'));
+    }
+  } catch (error) {
+    console.error('Error:', error);
+    alert('Failed to delete rehearsal: ' + error.message);
+  }
+}
+window.deleteRehearsal = deleteRehearsal;
 
 // Make functions available globally
 window.renderTimelineEditor = renderTimelineEditor;

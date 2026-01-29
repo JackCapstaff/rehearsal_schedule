@@ -8,7 +8,7 @@
     {% if concerts %}
     <div class="card mb-4">
         <h3 style="margin-bottom: 16px;">
-            <i class="bi bi-music" style="margin-right: 8px;"></i> Upcoming Concerts
+            <i class="bi bi-calendar-event" style="margin-right: 8px;"></i> Upcoming Events
         </h3>
         
         <!-- Debug: About to render {{ concerts|length }} concerts -->
@@ -61,7 +61,7 @@
                         {% if concert.programme %}
                         <div style="margin-bottom: 12px;">
                             <span style="font-weight: bold; color: #666;">Programme:</span>
-                            <div style="background-color: white; padding: 8px; border-radius: 4px; margin-top: 4px; font-size: 0.9rem; white-space: pre-wrap; max-height: 120px; overflow-y: auto;">{{ concert.programme }}</div>
+                            {{ concert.programme | format_programme | safe }}
                         </div>
                         {% endif %}
                         
@@ -774,7 +774,11 @@ async function openEditConcertModalForDashboard(concertId, ensembleId) {
         
         <div style="margin-bottom: 16px;">
             <label style="display: block; font-size: 14px; font-weight: 500; color: #374151; margin-bottom: 8px;">Programme</label>
-            <textarea id="dashEditConcertProgramme" placeholder="Enter the concert programme..." style="width: 100%; padding: 10px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 14px; box-sizing: border-box; min-height: 100px; font-family: monospace;">${concert.programme || ''}</textarea>
+            <div id="dashProgrammeSetsContainer" style="display: flex; flex-direction: column; gap: 12px;">
+                <!-- Sets will be added here dynamically -->
+            </div>
+            <button type="button" onclick="addDashProgrammeSet()" class="btn secondary" style="padding: 6px 12px; margin-top: 8px; font-size: 13px; background: #e5e7eb; color: #111827; border: none; border-radius: 6px; cursor: pointer;">+ Add Set</button>
+            <small style="color: #6b7280; display: block; margin-top: 4px;">Add sets for the concert programme. Line breaks will be preserved.</small>
         </div>
         
         <div style="margin-bottom: 20px;">
@@ -791,6 +795,9 @@ async function openEditConcertModalForDashboard(concertId, ensembleId) {
     overlay.appendChild(modal);
     document.body.appendChild(overlay);
     
+    // Initialize programme sets
+    initializeDashProgrammeSets(concert.programme || '');
+    
     // Focus the title input
     setTimeout(() => document.getElementById('dashEditConcertTitle').focus(), 100);
 }
@@ -802,7 +809,7 @@ async function saveDashboardConcertEdit(concertId, ensembleId, scheduleId) {
     const time = document.getElementById('dashEditConcertTime').value.trim() || '';
     const venue = document.getElementById('dashEditConcertVenue').value.trim() || '';
     const uniform = document.getElementById('dashEditConcertUniform').value.trim() || '';
-    const programme = document.getElementById('dashEditConcertProgramme').value.trim() || '';
+    const programme = collectDashProgrammeSets();
     const otherInfo = document.getElementById('dashEditConcertOtherInfo').value.trim() || '';
     
     try {
@@ -842,6 +849,117 @@ async function saveDashboardConcertEdit(concertId, ensembleId, scheduleId) {
         console.error('Error:', error);
         alert('Failed to save concert: ' + error.message);
     }
+}
+
+// Programme set management for dashboard modal
+function initializeDashProgrammeSets(programmeText) {
+  const container = document.getElementById('dashProgrammeSetsContainer');
+  if (!container) return;
+  
+    const normalized = (programmeText || '').replace(/\r\n/g, '\n');
+    const lines = normalized.split('\n');
+    const setRegex = /^Set\s+(\d+):?/i;
+    const sets = [];
+    let currentNum = null;
+    let currentLines = [];
+    lines.forEach(line => {
+        const m = line.match(setRegex);
+        if (m) {
+            if (currentNum !== null) {
+                sets.push({ num: currentNum, content: currentLines.join('\n') });
+            }
+            currentNum = m[1];
+            currentLines = [];
+        } else {
+            if (currentNum === null) currentNum = 1;
+            currentLines.push(line);
+        }
+    });
+    if (currentNum !== null) {
+        sets.push({ num: currentNum, content: currentLines.join('\n') });
+    }
+    if (sets.length === 0) {
+        sets.push({ num: 1, content: normalized });
+    }
+    sets.forEach((s, idx) => addDashProgrammeSet(s.num || idx + 1, s.content));
+}
+
+function addDashProgrammeSet(setNumber, content = '') {
+  const container = document.getElementById('dashProgrammeSetsContainer');
+  if (!container) return;
+  
+  if (!setNumber) {
+    const existingSets = container.querySelectorAll('.dash-programme-set');
+    setNumber = existingSets.length + 1;
+  }
+  
+  const setDiv = document.createElement('div');
+  setDiv.className = 'dash-programme-set';
+  setDiv.style.cssText = 'border: 1px solid #d1d5db; border-radius: 6px; padding: 12px; background: #f9fafb;';
+  
+  setDiv.innerHTML = `
+    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+      <label style="font-weight: 500; color: #374151; font-size: 13px;">Set ${setNumber}</label>
+      <button type="button" onclick="removeDashProgrammeSet(this)" class="btn secondary" style="padding: 4px 8px; font-size: 12px; background: #ef4444; color: white; border: none; border-radius: 4px; cursor: pointer;">Remove</button>
+    </div>
+    <textarea class="dash-programme-set-content" placeholder="Enter pieces for this set, one per line..." style="width: 100%; padding: 8px; border: 1px solid #d1d5db; border-radius: 4px; font-size: 13px; box-sizing: border-box; min-height: 80px; font-family: monospace; resize: vertical;"></textarea>
+  `;
+  
+  // Set textarea content after creating element to preserve special characters
+  const textarea = setDiv.querySelector('.dash-programme-set-content');
+  if (textarea) {
+    textarea.value = content;
+  }
+  
+  container.appendChild(setDiv);
+  renumberDashProgrammeSets();
+}
+
+function removeDashProgrammeSet(button) {
+  const container = document.getElementById('dashProgrammeSetsContainer');
+  if (!container) return;
+  
+  const setDiv = button.closest('.dash-programme-set');
+  if (setDiv) {
+    setDiv.remove();
+    renumberDashProgrammeSets();
+    
+    const remainingSets = container.querySelectorAll('.dash-programme-set');
+    if (remainingSets.length === 0) {
+      addDashProgrammeSet(1, '');
+    }
+  }
+}
+
+function renumberDashProgrammeSets() {
+  const container = document.getElementById('dashProgrammeSetsContainer');
+  if (!container) return;
+  
+  const sets = container.querySelectorAll('.dash-programme-set');
+  sets.forEach((set, idx) => {
+    const label = set.querySelector('label');
+    if (label) {
+      label.textContent = `Set ${idx + 1}`;
+    }
+  });
+}
+
+function collectDashProgrammeSets() {
+  const container = document.getElementById('dashProgrammeSetsContainer');
+  if (!container) return '';
+  
+  const sets = container.querySelectorAll('.dash-programme-set');
+  const parts = [];
+  
+  sets.forEach((set, idx) => {
+        const textarea = set.querySelector('.dash-programme-set-content');
+        const content = textarea?.value || '';
+    if (content) {
+      parts.push(`Set ${idx + 1}:\n${content}`);
+    }
+  });
+  
+  return parts.join('\n\n');
 }
 </script>
 {% endblock %}

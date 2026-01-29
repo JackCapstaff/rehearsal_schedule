@@ -67,9 +67,10 @@
       {% set reh_num = r[0] %}
       {% set rows = r[1] %}
       
-      <!-- Check if this is a Concert -->
-      {% if rows and rows[0].get('Event Type') == 'Concert' %}
-        <!-- Debug: Found concert event type for rehearsal {{ reh_num }}, Date: {{ rows[0].get('Date') }} -->
+      <!-- Check if this is a Concert or Contest -->
+      {% if rows and rows[0].get('Event Type') in ['Concert', 'Contest'] %}
+        {% set event_type_label = rows[0].get('Event Type', 'Concert') %}
+        <!-- Debug: Found {{ event_type_label }} event type for rehearsal {{ reh_num }}, Date: {{ rows[0].get('Date') }} -->
         <!-- Find the concert object for this rehearsal -->
         {% set concert_for_reh = namespace(obj=None) %}
         {% set reh_date = rows[0].get('Date', '')|string %}
@@ -84,7 +85,7 @@
         
         <!-- Debug: Concert found for reh {{ reh_num }}? {{ 'YES' if concert_for_reh.obj else 'NO' }} -->
         {% if concert_for_reh.obj %}
-        <!-- Concert Display -->
+        <!-- Concert/Contest Display -->
         <div class="accordion-item" id="concert-{{ reh_num }}" style="border: 2px solid #198754;">
           <h2 class="accordion-header">
             <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" 
@@ -117,7 +118,7 @@
                 {% if concert_for_reh.obj.programme %}
                   <div style="margin-top: 12px; padding-top: 12px; border-top: 1px solid #e0e0e0;">
                     <div style="font-weight: bold; font-size: 0.95rem; margin-bottom: 6px;">Programme:</div>
-                    <div style="background: white; padding: 8px; border-radius: 4px; font-size: 0.9rem; white-space: pre-wrap; border: 1px solid #e0e0e0;">{{ concert_for_reh.obj.programme }}</div>
+                    {{ concert_for_reh.obj.programme | format_programme | safe }}
                   </div>
                 {% endif %}
                 {% if concert_for_reh.obj.other_info %}
@@ -150,6 +151,19 @@
             {% if rows and rows[0].get("Event Type") == "Sectional" and rows[0].get("Section") and rows[0]["Section"] != "Full Ensemble" %}
               <span style="margin-left: 10px; font-weight: bold; color: #ff6b6b; background: #ffe0e0; padding: 2px 8px; border-radius: 4px; font-size: 0.9rem;">
                 🎻 {{ rows[0]["Section"] }}
+                {% if rows and rows[0].get("work") %}
+                  - {{ rows[0]["work"] }}
+                {% elif rows and rows|length > 0 %}
+                  {% set work_titles = [] %}
+                  {% for row in rows %}
+                    {% if row.get("Title") and row["Title"] not in work_titles %}
+                      {% set _ = work_titles.append(row["Title"]) %}
+                    {% endif %}
+                  {% endfor %}
+                  {% if work_titles|length > 0 %}
+                    - {{ work_titles|join(", ") }}
+                  {% endif %}
+                {% endif %}
               </span>
             {% endif %}
           </button>
@@ -385,7 +399,11 @@
         
         <div style="margin-bottom: 16px;">
           <label style="display: block; font-size: 14px; font-weight: 500; color: #374151; margin-bottom: 8px;">Programme</label>
-          <textarea id="viewConcertProgramme" placeholder="Enter the concert programme..." style="width: 100%; padding: 10px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 14px; box-sizing: border-box; min-height: 100px; font-family: monospace;">${programme}</textarea>
+          <div id="viewProgrammeSetsContainer" style="display: flex; flex-direction: column; gap: 12px;">
+            <!-- Sets will be added here dynamically -->
+          </div>
+          <button type="button" onclick="addViewProgrammeSet()" class="btn secondary" style="padding: 6px 12px; margin-top: 8px; font-size: 13px; background: #e5e7eb; color: #111827; border: none; border-radius: 6px; cursor: pointer;">+ Add Set</button>
+          <small style="color: #6b7280; display: block; margin-top: 4px;">Add sets for the concert programme. Line breaks will be preserved.</small>
         </div>
         
         <div style="margin-bottom: 20px;">
@@ -402,6 +420,9 @@
       overlay.appendChild(modal);
       document.body.appendChild(overlay);
       
+      // Initialize programme sets
+      initializeViewProgrammeSets(programme);
+      
       // Focus the title input
       setTimeout(() => document.getElementById('viewConcertTitle').focus(), 100);
     }
@@ -413,7 +434,7 @@
       const time = document.getElementById('viewConcertTime').value.trim() || '';
       const venue = document.getElementById('viewConcertVenue').value.trim() || '';
       const uniform = document.getElementById('viewConcertUniform').value.trim() || '';
-      const programme = document.getElementById('viewConcertProgramme').value.trim() || '';
+      const programme = collectViewProgrammeSets();
       const otherInfo = document.getElementById('viewConcertOtherInfo').value.trim() || '';
       
       try {
@@ -446,6 +467,122 @@
         console.error('Error:', error);
         alert('Failed to save concert: ' + error.message);
       }
+    }
+    
+    // Programme set management for view modal
+    function parseProgrammeSetsView(programmeText) {
+      const normalized = (programmeText || '').replace(/\r\n/g, '\n');
+      const lines = normalized.split('\n');
+      const setRegex = /^Set\s+(\d+):?/i;
+      const sets = [];
+      let currentNum = null;
+      let currentLines = [];
+      lines.forEach(line => {
+        const m = line.match(setRegex);
+        if (m) {
+          if (currentNum !== null) {
+            sets.push({ num: currentNum, content: currentLines.join('\n') });
+          }
+          currentNum = m[1];
+          currentLines = [];
+        } else {
+          if (currentNum === null) currentNum = 1;
+          currentLines.push(line);
+        }
+      });
+      if (currentNum !== null) {
+        sets.push({ num: currentNum, content: currentLines.join('\n') });
+      }
+      if (sets.length === 0) {
+        return [{ num: 1, content: normalized }];
+      }
+      return sets;
+    }
+
+    function initializeViewProgrammeSets(programmeText) {
+      const container = document.getElementById('viewProgrammeSetsContainer');
+      if (!container) return;
+      const parsed = parseProgrammeSetsView(programmeText);
+      parsed.forEach((set, idx) => addViewProgrammeSet(set.num || idx + 1, set.content));
+    }
+    
+    function addViewProgrammeSet(setNumber, content = '') {
+      const container = document.getElementById('viewProgrammeSetsContainer');
+      if (!container) return;
+      
+      if (!setNumber) {
+        const existingSets = container.querySelectorAll('.view-programme-set');
+        setNumber = existingSets.length + 1;
+      }
+      
+      const setDiv = document.createElement('div');
+      setDiv.className = 'view-programme-set';
+      setDiv.style.cssText = 'border: 1px solid #d1d5db; border-radius: 6px; padding: 12px; background: #f9fafb;';
+      
+      setDiv.innerHTML = `
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+          <label style="font-weight: 500; color: #374151; font-size: 13px;">Set ${setNumber}</label>
+          <button type="button" onclick="removeViewProgrammeSet(this)" class="btn secondary" style="padding: 4px 8px; font-size: 12px; background: #ef4444; color: white; border: none; border-radius: 4px; cursor: pointer;">Remove</button>
+        </div>
+        <textarea class="view-programme-set-content" placeholder="Enter pieces for this set, one per line..." style="width: 100%; padding: 8px; border: 1px solid #d1d5db; border-radius: 4px; font-size: 13px; box-sizing: border-box; min-height: 80px; font-family: monospace; resize: vertical;"></textarea>
+      `;
+      
+      // Set textarea content after creating element to preserve special characters
+      const textarea = setDiv.querySelector('.view-programme-set-content');
+      if (textarea) {
+        textarea.value = content;
+      }
+      
+      container.appendChild(setDiv);
+      renumberViewProgrammeSets();
+    }
+    
+    function removeViewProgrammeSet(button) {
+      const container = document.getElementById('viewProgrammeSetsContainer');
+      if (!container) return;
+      
+      const setDiv = button.closest('.view-programme-set');
+      if (setDiv) {
+        setDiv.remove();
+        renumberViewProgrammeSets();
+        
+        const remainingSets = container.querySelectorAll('.view-programme-set');
+        if (remainingSets.length === 0) {
+          addViewProgrammeSet(1, '');
+        }
+      }
+    }
+    
+    function renumberViewProgrammeSets() {
+      const container = document.getElementById('viewProgrammeSetsContainer');
+      if (!container) return;
+      
+      const sets = container.querySelectorAll('.view-programme-set');
+      sets.forEach((set, idx) => {
+        const label = set.querySelector('label');
+        if (label) {
+          label.textContent = `Set ${idx + 1}`;
+        }
+      });
+    }
+    
+    function collectViewProgrammeSets() {
+      const container = document.getElementById('viewProgrammeSetsContainer');
+      if (!container) return '';
+      
+      const sets = container.querySelectorAll('.view-programme-set');
+      const parts = [];
+      
+      sets.forEach((set, idx) => {
+        const textarea = set.querySelector('.view-programme-set-content');
+        // Do not trim; preserve all lines
+        const content = textarea?.value || '';
+        if (content) {
+          parts.push(`Set ${idx + 1}:\n${content}`);
+        }
+      });
+      
+      return parts.join('\n\n');
     }
     
     // Edit auto-generated concert details
