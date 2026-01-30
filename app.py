@@ -5720,21 +5720,27 @@ def download_schedule_pdf(schedule_id):
         return d >= today
     events_list = [ev for ev in events_list if is_future_or_today(ev)]
     # --- PDF rendering (same as /my/pdf) ---
-    from io import BytesIO
-    from reportlab.lib import colors
-    from reportlab.lib.pagesizes import A4
-    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-    from reportlab.lib.units import cm
-    from reportlab.platypus import (
-        SimpleDocTemplate,
-        Table,
-        TableStyle,
-        Paragraph,
-        Spacer,
-        PageBreak,
-        KeepTogether,
-    )
-    from reportlab.lib.enums import TA_CENTER
+    try:
+        from io import BytesIO
+        from reportlab.lib import colors
+        from reportlab.lib.pagesizes import A4
+        from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+        from reportlab.lib.units import cm
+        from reportlab.platypus import (
+            SimpleDocTemplate,
+            Table,
+            TableStyle,
+            Paragraph,
+            Spacer,
+            PageBreak,
+            KeepTogether,
+        )
+        from reportlab.lib.enums import TA_CENTER
+    except Exception as e:
+        import traceback
+        print("[PDF] Import error while preparing PDF libraries:", e)
+        print(traceback.format_exc())
+        abort(500, description="PDF generation dependencies are not available on the server.")
     base_font = 'Times-Roman'
     base_font_bold = 'Times-Bold'
     buffer = BytesIO()
@@ -5917,12 +5923,18 @@ def download_schedule_pdf(schedule_id):
                 table,
                 Spacer(1, 0.5 * cm)
             ]))
-    doc.page = 0
-    doc.page_count = 0
-    doc.build(story, onFirstPage=lambda c, d: None, onLaterPages=draw_footer)
-    buffer.seek(0)
-    filename = f"{ensemble_name.replace(' ', '_')}_Schedule.pdf"
-    return send_file(buffer, as_attachment=True, download_name=filename, mimetype='application/pdf')
+    try:
+        doc.page = 0
+        doc.page_count = 0
+        doc.build(story, onFirstPage=lambda c, d: None, onLaterPages=draw_footer)
+        buffer.seek(0)
+        filename = f"{ensemble_name.replace(' ', '_')}_Schedule.pdf"
+        return send_file(buffer, as_attachment=True, download_name=filename, mimetype='application/pdf')
+    except Exception as e:
+        import traceback
+        print(f"[PDF] Exception while building schedule PDF: {e}")
+        print(traceback.format_exc())
+        abort(500, description="An error occurred while generating the PDF. See server logs for details.")
 
 
 @app.get("/my/pdf")
@@ -6082,26 +6094,32 @@ def download_my_schedule_pdf():
         return "No rehearsals found", 404
 
     # Create PDF aligned with schedule view styling (title page, serif fonts, footer)
-    from io import BytesIO
-    from reportlab.lib import colors
-    from reportlab.lib.pagesizes import A4
-    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-    from reportlab.lib.units import cm
-    from reportlab.platypus import (
-        SimpleDocTemplate,
-        Table,
-        TableStyle,
-        Paragraph,
-        Spacer,
-        PageBreak,
-        KeepTogether,
-    )
-    from reportlab.lib.enums import TA_CENTER
+    try:
+        from io import BytesIO
+        from reportlab.lib import colors
+        from reportlab.lib.pagesizes import A4
+        from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+        from reportlab.lib.units import cm
+        from reportlab.platypus import (
+            SimpleDocTemplate,
+            Table,
+            TableStyle,
+            Paragraph,
+            Spacer,
+            PageBreak,
+            KeepTogether,
+        )
+        from reportlab.lib.enums import TA_CENTER
 
-    base_font = 'Times-Roman'
-    base_font_bold = 'Times-Bold'
+        base_font = 'Times-Roman'
+        base_font_bold = 'Times-Bold'
 
-    buffer = BytesIO()
+        buffer = BytesIO()
+    except Exception as e:
+        import traceback
+        print("[PDF] Import error while preparing PDF libraries for /my/pdf:", e)
+        print(traceback.format_exc())
+        abort(500, description="PDF generation dependencies are not available on the server.")
 
     def draw_footer(canvas_obj, doc_obj):
         canvas_obj.saveState()
@@ -6307,13 +6325,19 @@ def download_my_schedule_pdf():
 
             story.append(KeepTogether([heading_para, table, Spacer(1, 0.4 * cm)]))
 
-    doc.page = 0
-    doc.page_count = 0
-    doc.build(story, onFirstPage=lambda c, d: None, onLaterPages=draw_footer)
-    buffer.seek(0)
+    try:
+        doc.page = 0
+        doc.page_count = 0
+        doc.build(story, onFirstPage=lambda c, d: None, onLaterPages=draw_footer)
+        buffer.seek(0)
 
-    filename = "My_Rehearsal_Schedule.pdf"
-    return send_file(buffer, as_attachment=True, download_name=filename, mimetype='application/pdf')
+        filename = "My_Rehearsal_Schedule.pdf"
+        return send_file(buffer, as_attachment=True, download_name=filename, mimetype='application/pdf')
+    except Exception as e:
+        import traceback
+        print(f"[PDF] Exception while building /my/pdf: {e}")
+        print(traceback.format_exc())
+        abort(500, description="An error occurred while generating the PDF. See server logs for details.")
 
 
 # ----------------------------
