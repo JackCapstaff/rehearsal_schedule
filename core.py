@@ -11,12 +11,15 @@ import pandas as pd
 
 DEFAULT_G = 5
 
-SCRIPT1 = os.environ.get("SCRIPT1_PATH", "../1-Import-Time_per_work_per_rehearsal.py")
-SCRIPT2 = os.environ.get("SCRIPT2_PATH", "../2-Orchestration_organisation.py")
-SCRIPT3 = os.environ.get("SCRIPT3_PATH", "../3-Organised_rehearsal_with_time.py")
-SCRIPT4 = os.environ.get("SCRIPT4_PATH", "../4 - Final Compile and PDF.py")
+SCRIPT1 = os.environ.get("SCRIPT1_PATH", "1-Import-Time_per_work_per_rehearsal.py")
+SCRIPT2 = os.environ.get("SCRIPT2_PATH", "2-Orchestration_organisation.py")
+SCRIPT3 = os.environ.get("SCRIPT3_PATH", "3-Organised_rehearsal_with_time.py")
+SCRIPT4 = os.environ.get("SCRIPT4_PATH", "4 - Final Compile and PDF.py")
 
 def load_module_from_path(name: str, path: str):
+    # Resolve relative paths to this directory
+    if not os.path.isabs(path):
+        path = os.path.join(os.path.dirname(__file__), path)
     if not os.path.exists(path):
         raise FileNotFoundError(f"Missing required file: {path}")
     spec = importlib.util.spec_from_file_location(name, path)
