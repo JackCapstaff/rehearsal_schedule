@@ -25,6 +25,9 @@
         <button class="btn" type="submit">Login</button>
         <a class="btn secondary" href="{{ url_for('register_view') }}">Create account</a>
       </div>
+      <div style="margin-top:8px;">
+        <a href="{{ url_for('forgot_password_view') }}">Forgot your password?</a>
+      </div>
     </form>
   </div>
 {% endblock %}

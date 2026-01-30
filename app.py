@@ -2192,6 +2192,11 @@ def require_login_for_everything():
         "login_view", "login_post",
         "register_view", "register_post",
     }
+    # allow password reset endpoints
+    allowed.update({
+        "forgot_password_view", "forgot_password_post",
+        "reset_password_view", "reset_password_post",
+    })
     if request.endpoint in allowed:
         return None
 
@@ -4318,6 +4323,112 @@ def login_post():
 def logout_view():
     session.clear()
     return redirect(url_for("login_view"))
+
+
+# ----------------------------
+# Password reset (forgot password)
+# ----------------------------
+RESET_TOKEN_EXPIRY_SECONDS = int(os.environ.get("RESET_TOKEN_EXPIRY_SECONDS", "3600"))  # 1 hour default
+
+
+def _clear_reset_token_for_user(user: dict):
+    user.pop("reset_token", None)
+    user.pop("reset_expires", None)
+
+
+@app.get("/forgot_password")
+def forgot_password_view():
+    return render_template("forgot_password_request.html")
+
+
+@app.post("/forgot_password")
+def forgot_password_post():
+    email = (request.form.get("email") or "").strip().lower()
+    users = load_users()
+    user = next((u for u in users if (u.get("email") or "").strip().lower() == email), None)
+
+    # Always show a neutral success message to avoid disclosing account existence
+    msg = "If an account with that email exists, a password reset link has been sent."
+
+    if user:
+        token = uuid.uuid4().hex
+        expires = int(time.time()) + RESET_TOKEN_EXPIRY_SECONDS
+        user['reset_token'] = token
+        user['reset_expires'] = expires
+        save_users(users)
+
+        # Build reset link
+        try:
+            reset_link = url_for('reset_password_view', token=token, _external=True)
+        except Exception:
+            # Fallback if _external fails in some environments
+            reset_link = f"/reset_password?token={token}"
+
+        subject = f"Reset your password"
+        html_body = f"<p>Hello {user.get('first_name','')},</p>\n" \
+            f"<p>We received a request to reset your Rehearsal Schedule password. " \
+            f"If you made this request, click the link below to choose a new password. This link will expire in {int(RESET_TOKEN_EXPIRY_SECONDS/60)} minutes.</p>\n" \
+            f"<p><a href=\"{reset_link}\">Reset your password</a></p>\n" \
+            f"<p>If you did not request a password reset, you can ignore this message.</p>\n"
+
+        text_body = f"Reset your password: {reset_link}\nThis link expires in {int(RESET_TOKEN_EXPIRY_SECONDS/60)} minutes."
+
+        try:
+            brevo_send_email([user.get('email')], subject, html_body, text_body)
+        except Exception:
+            app.logger.exception("Failed to send password reset email")
+
+    return render_template("forgot_password_request.html", message=msg)
+
+
+@app.get('/reset_password')
+def reset_password_view():
+    token = request.args.get('token')
+    if not token:
+        return render_template('reset_password.html', error='Missing token.'), 400
+
+    users = load_users()
+    user = next((u for u in users if u.get('reset_token') == token), None)
+    if not user:
+        return render_template('reset_password.html', error='Invalid or expired token.'), 400
+
+    expires = user.get('reset_expires', 0)
+    if int(time.time()) > int(expires):
+        _clear_reset_token_for_user(user)
+        save_users(users)
+        return render_template('reset_password.html', error='Token expired.'), 400
+
+    return render_template('reset_password.html', token=token)
+
+
+@app.post('/reset_password')
+def reset_password_post():
+    token = request.form.get('token')
+    password = request.form.get('password') or ''
+    password2 = request.form.get('password2') or ''
+
+    if not token:
+        return render_template('reset_password.html', error='Missing token.'), 400
+    if not password or password != password2:
+        return render_template('reset_password.html', token=token, error='Passwords do not match.'), 400
+
+    users = load_users()
+    user = next((u for u in users if u.get('reset_token') == token), None)
+    if not user:
+        return render_template('reset_password.html', error='Invalid or expired token.'), 400
+
+    expires = user.get('reset_expires', 0)
+    if int(time.time()) > int(expires):
+        _clear_reset_token_for_user(user)
+        save_users(users)
+        return render_template('reset_password.html', error='Token expired.'), 400
+
+    # Update password
+    user['password_hash'] = generate_password_hash(password)
+    _clear_reset_token_for_user(user)
+    save_users(users)
+
+    return render_template('login.html', message='Password updated. You can now log in.')
 
 
 @app.get("/my")
