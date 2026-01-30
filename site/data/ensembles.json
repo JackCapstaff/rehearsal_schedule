@@ -41,16 +41,16 @@
     "name": "Rotherham Symphony Orchestra",
     "concerts": [
       {
-        "id": "concert_57d39533fa48",
-        "title": "Rotherham Symphony Orchestra - Fate and Destiny",
+        "id": "concert_5ef388ce3768",
+        "title": "Fate and Destiny",
         "date": "2026-03-14",
         "time": "19:30",
         "venue": "Rotherham Minster",
-        "uniform": "TBC",
-        "programme": "Set 1:\nHandel - Fireworks\nForce of Destiny \nCarmen Suite 1\n\nSet 2:\nBeethoven Symphony 5",
-        "other_info": "Afternoon Rehearsal",
+        "uniform": "Formal All Blacks",
+        "programme": "Set 1:\nHandel - Music for the Royal Fireworks\nVerdi - La Forza Del Destino\nBizet - Carmen Suite No. 1\n\nSet 2:\nBeethoven - Symphony No. 5",
+        "other_info": "",
         "status": "scheduled",
-        "schedule_id": "sched_566a4a128f",
+        "schedule_id": "sched_1634c3e9a1",
         "is_auto_generated": true
       }
     ]

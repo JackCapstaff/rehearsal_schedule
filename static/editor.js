@@ -767,7 +767,26 @@ function renderScheduleAccordion(containerId, rows) {
     header.style.cssText = "background:#f3f4f6; padding:12px 16px; border-bottom:1px solid #d1d5db; cursor:pointer; display:flex; justify-content:space-between; align-items:center;";
     
     const title = document.createElement("strong");
-    title.textContent = `Rehearsal ${rnum} (${items.length} items)`;
+    // Default header text
+    let headerText = `Rehearsal ${rnum} (${items.length} items)`;
+    // If this rehearsal is a Concert/Contest, show concert title and date instead
+    const evTypeRaw = items[0]['Event Type'] || items[0]['Event_Type'] || items[0]['event'] || '';
+    const evType = String(evTypeRaw).toLowerCase();
+    if (evType === 'concert' || evType === 'contest') {
+      const concertTitle = items[0]['Title'] || items[0]['Title'] === 0 ? items[0]['Title'] : (items[0]['Title'] || 'Concert');
+      const dateVal = items[0]['Date'] || items[0]['date'] || '';
+      let dateStr = '';
+      try {
+        if (dateVal) {
+          const d = new Date(dateVal);
+          if (!isNaN(d)) {
+            dateStr = d.toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: undefined });
+          }
+        }
+      } catch (e) { /* ignore */ }
+      headerText = concertTitle + (dateStr ? ` — ${dateStr}` : '');
+    }
+    title.textContent = headerText;
     
     const toggle = document.createElement("span");
     toggle.textContent = "▼";
@@ -2107,6 +2126,13 @@ function renderTimelineEditor() {
       byRehearsal[rnum].push(row);
     });
 
+    // Preserve horizontal scroll position if present
+    let prevScrollLeft = 0;
+    const existingGrid = contentEl.querySelector('.timeline-grid');
+    if (existingGrid) {
+      try { prevScrollLeft = existingGrid.scrollLeft || 0; } catch (e) { prevScrollLeft = 0; }
+    }
+
     // Create grid container
     const gridDiv = document.createElement("div");
     gridDiv.className = "timeline-grid";
@@ -2122,6 +2148,15 @@ function renderTimelineEditor() {
 
     contentEl.innerHTML = "";
     contentEl.appendChild(gridDiv);
+
+    // Restore previous horizontal scroll position so the view doesn't jump
+    try {
+      if (prevScrollLeft && gridDiv && typeof gridDiv.scrollLeft !== 'undefined') {
+        gridDiv.scrollLeft = prevScrollLeft;
+      }
+    } catch (e) {
+      console.warn('Could not restore timeline scroll position', e);
+    }
 
     // Re-apply selection highlights after re-render
     updateSelectionStyles();

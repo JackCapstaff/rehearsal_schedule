@@ -5,7 +5,7 @@
   "status": "published",
   "created_by": "872bf6d3b5bd45a1824cfb04c105c1ad",
   "created_at": 1769695755,
-  "updated_at": 1769696566,
+  "updated_at": 1769703588,
   "G": 5,
   "works": [],
   "rehearsals": [
@@ -1345,6 +1345,39 @@
         "failed": 0,
         "subject": "Rehearsal schedule updates for Derwent Brass"
       }
+    },
+    {
+      "ts": 1769703575,
+      "action": "attendance_response",
+      "description": "yes for rehearsal 4",
+      "actor_id": "9fa5f65b93314f8bbc9b7bc684890092",
+      "actor_email": "jackcapstaff@googlemail.com",
+      "actor_name": "William Wilberforce",
+      "meta": {
+        "rehearsal": 4
+      }
+    },
+    {
+      "ts": 1769703585,
+      "action": "attendance_response",
+      "description": "maybe for rehearsal 5",
+      "actor_id": "9fa5f65b93314f8bbc9b7bc684890092",
+      "actor_email": "jackcapstaff@googlemail.com",
+      "actor_name": "William Wilberforce",
+      "meta": {
+        "rehearsal": 5
+      }
+    },
+    {
+      "ts": 1769703588,
+      "action": "attendance_response",
+      "description": "no for rehearsal 6",
+      "actor_id": "9fa5f65b93314f8bbc9b7bc684890092",
+      "actor_email": "jackcapstaff@googlemail.com",
+      "actor_name": "William Wilberforce",
+      "meta": {
+        "rehearsal": 6
+      }
     }
   ],
   "last_notified_at": 1769696567,
@@ -1365,5 +1398,28 @@
     "Section",
     "Event Type"
   ],
-  "works_cols": []
+  "works_cols": [],
+  "attendance": {
+    "4": {
+      "9fa5f65b93314f8bbc9b7bc684890092": {
+        "status": "yes",
+        "note": "",
+        "responded_at": 1769703575
+      }
+    },
+    "5": {
+      "9fa5f65b93314f8bbc9b7bc684890092": {
+        "status": "maybe",
+        "note": "Dogs",
+        "responded_at": 1769703585
+      }
+    },
+    "6": {
+      "9fa5f65b93314f8bbc9b7bc684890092": {
+        "status": "no",
+        "note": "",
+        "responded_at": 1769703588
+      }
+    }
+  }
 }

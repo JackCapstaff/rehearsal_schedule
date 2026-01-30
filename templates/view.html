@@ -102,14 +102,14 @@
                     data-bs-target="#collapse-{{ reh_num }}" aria-expanded="false" 
                     aria-controls="collapse-{{ reh_num }}" id="btn-concert-{{ reh_num }}"
                     style="background-color: #f0f9f6;">
-              <strong style="color: #198754;">🎵 {{ concert_for_reh.obj.title }}</strong>
+              <strong style="color: #198754;">🎵 {{ concert_for_reh.obj.title }}{% if concert_for_reh.obj.date %} — {{ concert_for_reh.obj.date|uk_date_format }}{% if concert_for_reh.obj.time %} at {{ concert_for_reh.obj.time }}{% endif %}{% endif %}</strong>
             </button>
           </h2>
           <div id="collapse-{{ reh_num }}" class="accordion-collapse collapse" 
                data-bs-parent="#rehearsalAccordion">
             <div class="accordion-body p-0">
               <div data-concert-id="{{ concert_for_reh.obj.id }}" style="padding: 16px;">
-                {% if concert_for_reh.obj.get('is_auto_generated') %}
+                {% if concert_for_reh.obj.get('is_auto_generated') and user and user.is_admin %}
                   <div style="background: #fbbf24; color: #78350f; padding: 4px 8px; border-radius: 3px; font-size: 0.75rem; font-weight: bold; display: inline-block; margin-bottom: 8px;">AUTO-GENERATED</div>
                 {% endif %}
                 <div style="color: #666; font-size: 0.95rem; margin-bottom: 8px;">
@@ -204,6 +204,78 @@
                 <button onclick="updateEventTypeAndSection({{ reh_num }})" class="btn btn-sm" style="margin-left: 5px;">Save</button>
               </div>
             {% endif %}
+
+              <!-- Attendance Prompt for Members -->
+              {% if user and not user.is_admin and not rows[0].is_past %}
+                <div style="padding: 10px; background: #e7f5ff; border-bottom: 1px solid #b6e0fe; margin-bottom: 10px;">
+                  <form id="attendance-form-{{ reh_num }}" onsubmit="return submitAttendance({{ reh_num }});" style="display:flex; gap:12px; align-items:center;">
+                    <label style="font-weight:bold;">Attendance:</label>
+                    <label><input type="radio" name="attendance-{{ reh_num }}" value="yes"> Yes</label>
+                    <label><input type="radio" name="attendance-{{ reh_num }}" value="no"> No</label>
+                    <label><input type="radio" name="attendance-{{ reh_num }}" value="maybe" onchange="toggleMaybeNote({{ reh_num }})"> Maybe</label>
+                    <input type="text" name="maybe-note-{{ reh_num }}" id="maybe-note-{{ reh_num }}" placeholder="Required for Maybe" style="display:none; width:180px;" />
+                    <button type="submit" class="btn btn-sm">Submit</button>
+                    <span id="attendance-status-{{ reh_num }}" style="margin-left:10px; font-size:0.95em; color:#198754;"></span>
+                  </form>
+                </div>
+                <script>
+                  function toggleMaybeNote(rehNum) {
+                    var maybeRadio = document.querySelector('input[name="attendance-' + rehNum + '"][value="maybe"]');
+                    var noteInput = document.getElementById('maybe-note-' + rehNum);
+                    if (maybeRadio && maybeRadio.checked) {
+                      noteInput.style.display = 'inline-block';
+                    } else {
+                      noteInput.style.display = 'none';
+                    }
+                  }
+                  function submitAttendance(rehNum) {
+                    var status = document.querySelector('input[name="attendance-' + rehNum + '"]:checked');
+                    var note = document.getElementById('maybe-note-' + rehNum).value;
+                    if (!status) { alert('Please select Yes, No, or Maybe.'); return false; }
+                    if (status.value === 'maybe' && !note) { alert('Note required for Maybe.'); return false; }
+                    fetch('/api/s/{{ schedule_id }}/attendance/respond', {
+                      method: 'POST',
+                      headers: { 'Content-Type': 'application/json' },
+                      body: JSON.stringify({ event_id: rehNum, status: status.value, note: note })
+                    }).then(r => r.json()).then(data => {
+                      var msg = data.ok ? 'Saved!' : (data.error || 'Error');
+                      document.getElementById('attendance-status-' + rehNum).textContent = msg;
+                    });
+                    return false;
+                  }
+                </script>
+              {% endif %}
+
+              <!-- Attendance Register for Admins -->
+              {% if user and user.is_admin %}
+                <div style="padding: 10px; background: #f1f5f9; border-bottom: 1px solid #cbd5e1; margin-bottom: 10px;">
+                  <a href="#" onclick="showAttendanceRegister({{ reh_num }}); return false;" class="btn btn-sm">View Attendance Register</a>
+                  <div id="attendance-register-{{ reh_num }}" style="display:none; margin-top:10px;"></div>
+                  <script>
+                    function showAttendanceRegister(rehNum) {
+                      var regDiv = document.getElementById('attendance-register-' + rehNum);
+                      if (regDiv.style.display === 'none') {
+                        fetch('/api/s/{{ schedule_id }}/attendance/event/' + rehNum)
+                          .then(r => r.json()).then(data => {
+                            if (data.ok) {
+                              var html = '<table style="width:100%;"><tr><th>Name</th><th>Instrument</th><th>Status</th><th>Note</th></tr>';
+                              data.responses.forEach(function(row) {
+                                html += '<tr><td>' + (row.name || row.email) + '</td><td>' + (row.instrument || '') + '</td><td>' + (row.status || '-') + '</td><td>' + (row.note || '') + '</td></tr>';
+                              });
+                              html += '</table>';
+                              regDiv.innerHTML = html;
+                            } else {
+                              regDiv.innerHTML = '<div style="color:red;">Error loading register</div>';
+                            }
+                            regDiv.style.display = 'block';
+                          });
+                      } else {
+                        regDiv.style.display = 'none';
+                      }
+                    }
+                  </script>
+                </div>
+              {% endif %}
             <table style="margin:0; width:100%;">
               <thead>
                 <tr>
