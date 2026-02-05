@@ -118,6 +118,7 @@
     {% if schedules %}
       <div style="margin-top:14px;">
         {% for s in schedules %}
+          {% if s.id %}
           <div style="border-top:1px solid #eee; padding-top:10px; margin-top:10px; display:flex; justify-content:space-between; gap:12px; align-items:baseline;">
             <div>
               <strong>{{ s.name }}</strong>
@@ -161,6 +162,12 @@
               </form>
             </div>
           </div>
+          {% else %}
+          <div style="border-top:1px solid #eee; padding-top:10px; margin-top:10px;">
+            <strong style="color: #dc2626;">⚠️ Corrupted Schedule (No ID)</strong>
+            <div class="small">This schedule is corrupted and cannot be loaded. Contact admin to fix.</div>
+          </div>
+          {% endif %}
         {% endfor %}
       </div>
     {% else %}

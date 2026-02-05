@@ -17,6 +17,7 @@ import pandas as pd
 from flask import Flask, render_template, request, redirect, url_for, jsonify, abort, send_file, session
 from werkzeug.security import generate_password_hash, check_password_hash
 from markupsafe import Markup
+import html as _html
 
 # Tracing (OpenTelemetry)
 try:
@@ -136,6 +137,19 @@ def timestamp_to_date(timestamp):
     except:
         return str(timestamp)
 
+@app.template_filter('format_duration')
+def format_duration(seconds):
+    """Format seconds as MM:SS"""
+    if seconds is None or seconds == 0:
+        return "0:00"
+    try:
+        seconds = int(seconds)
+        mins = seconds // 60
+        secs = seconds % 60
+        return f"{mins}:{secs:02d}"
+    except:
+        return str(seconds)
+
 
 @app.template_filter('format_programme')
 def format_programme(programme_text):
@@ -199,6 +213,10 @@ def load_schedule(schedule_id: str) -> dict:
     p = schedule_path(schedule_id)
     s = read_json(p, None) or {}  # see safe read_json note below
     
+    # Ensure the schedule has an id field (derive from filename if missing)
+    if "id" not in s:
+        s["id"] = schedule_id
+    
     # Ensure all rehearsals have the "Include in allocation" column
     if "rehearsals" in s:
         s["rehearsals"] = ensure_include_in_allocation_column(s["rehearsals"])
@@ -238,6 +256,8 @@ def load_schedule(schedule_id: str) -> dict:
         s["last_notified_at"] = None
     if "attendance" not in s or not isinstance(s.get("attendance"), dict):
         s["attendance"] = {}
+    if "conducting_logs" not in s or not isinstance(s.get("conducting_logs"), list):
+        s["conducting_logs"] = []
     
     return s
 
@@ -294,6 +314,7 @@ def make_new_schedule(ensemble_id: str, name: str, created_by: str | None = None
         "timed_history": [],
         "attendance": {},
         "audit_log": [],
+        "conducting_logs": [],
         "last_notified_at": None,
         "generated_at": None,
     }
@@ -346,7 +367,8 @@ def migrate_project_json_if_needed():
     ensembles = load_ensembles()
     default_ens = ensembles[0]["id"] if ensembles else "default"
     s = make_new_schedule(default_ens, "Default Schedule", created_by=None)
-    add_audit_entry(s, action="timed_edit", description=description, actor=actor, meta={"action": action, "count": len(timed_updates)})
+    # Audit: record that a default schedule was created during migration
+    add_audit_entry(s, action="schedule_created", description="Default schedule created", actor=None, meta={})
     save_schedule(s)
     set_default_schedule_id(s["id"])
 
@@ -793,7 +815,8 @@ def update_concert(ensemble_id: str, concert_id: str, concert_data: dict) -> Opt
     concert = next((c for c in ensemble.get("concerts", []) if c.get("id") == concert_id), None)
     if not concert:
         return None
-    
+    # Keep a copy of the previous concert state for audit diffs
+    old_concert = dict(concert)
     # Track if date changed
     old_date = concert.get("date")
     new_date = concert_data.get("date", old_date)
@@ -827,13 +850,24 @@ def update_concert(ensemble_id: str, concert_id: str, concert_data: dict) -> Opt
     concert["status"] = concert_data.get("status", concert["status"])
     
     save_ensembles(ensembles)
-    # Audit
-    schedule_id = concert.get("schedule_id")
-    if schedule_id:
-        s = load_schedule(schedule_id)
-        if s:
-            add_audit_entry(s, action="concert_updated", description=f"Concert updated: {concert.get('title')}", actor=current_user(), meta={"concert_id": concert_id, "date": concert.get("date"), "time": concert.get("time")})
-            save_schedule(s)
+    # Audit: compute field-level diffs
+    try:
+        changed = []
+        keys_of_interest = ["title", "date", "time", "venue", "uniform", "programme", "other_info", "status", "schedule_id"]
+        for k in keys_of_interest:
+            o = old_concert.get(k)
+            n = concert.get(k)
+            if (o or None) != (n or None):
+                changed.append({"field": k, "old": o, "new": n})
+        schedule_id = concert.get("schedule_id")
+        if schedule_id:
+            s = load_schedule(schedule_id)
+            if s:
+                desc = f"Concert updated: {concert.get('title')} ({len(changed)} change(s))"
+                add_audit_entry(s, action="concert_updated", description=desc, actor=current_user(), meta={"concert_id": concert_id, "changes": changed})
+                save_schedule(s)
+    except Exception as e:
+        print(f"[AUDIT] Failed to compute concert diffs: {e}")
     
     # SYNC: Update corresponding rehearsal row in schedule
     schedule_id = concert.get("schedule_id")
@@ -1005,6 +1039,66 @@ def add_audit_entry(schedule: dict, action: str, description: str, actor: Option
     if len(log) > AUDIT_LOG_LIMIT:
         # Keep most recent entries
         schedule["audit_log"] = log[-AUDIT_LOG_LIMIT:]
+
+
+@app.template_filter('render_audit')
+def render_audit(entry: dict) -> Markup:
+    """Render an audit `entry` into a human-friendly HTML snippet.
+
+    Supports common actions: `timed_edit`, `rehearsal_update`, `concert_updated`, `concert_added`, `concert_deleted`.
+    Falls back to JSON rendering for unknown action/meta shapes.
+    """
+    if not entry or not isinstance(entry, dict):
+        return Markup("")
+    action = entry.get('action', '')
+    meta = entry.get('meta') or {}
+    parts: list[str] = []
+
+    def esc(x):
+        return _html.escape(str(x)) if x is not None else ''
+
+    if action == 'timed_edit' and isinstance(meta, dict):
+        changes = meta.get('changes') or []
+        if not changes:
+            parts.append('No detailed changes recorded.')
+        else:
+            for c in changes:
+                ctype = c.get('type')
+                if ctype == 'row_removed':
+                    parts.append(f"Removed: <strong>{esc(c.get('title'))}</strong> — rehearsal {esc(c.get('rehearsal'))} @ {esc(c.get('time'))} ({esc(c.get('duration'))} min)")
+                elif ctype == 'row_added':
+                    parts.append(f"Added: <strong>{esc(c.get('title'))}</strong> — rehearsal {esc(c.get('rehearsal'))} @ {esc(c.get('time'))} ({esc(c.get('duration'))} min)")
+                elif ctype == 'moved':
+                    parts.append(f"Moved: <strong>{esc(c.get('title'))}</strong> — from rehearsals {esc(','.join(map(str, c.get('from', []))))} to {esc(','.join(map(str, c.get('to', []))))}")
+                elif ctype == 'duration_changed':
+                    parts.append(f"Duration changed: <strong>{esc(c.get('title'))}</strong> — rehearsal {esc(c.get('rehearsal'))}: {esc(c.get('old'))} → {esc(c.get('new'))} min")
+                else:
+                    # Generic fallback for unknown change objects
+                    parts.append(esc(c))
+    elif action in ('rehearsal_update', 'concert_updated') and isinstance(meta, dict):
+        changes = meta.get('changes') or []
+        if not changes:
+            parts.append('No detailed changes recorded.')
+        else:
+            for c in changes:
+                field = esc(c.get('field') or c.get('name') or '')
+                old = esc(c.get('old'))
+                new = esc(c.get('new'))
+                parts.append(f"{field}: {old} → {new}")
+    elif action in ('concert_added', 'concert_deleted') and isinstance(meta, dict):
+        cid = esc(meta.get('concert_id') or entry.get('meta', {}).get('concert_id'))
+        if action == 'concert_added':
+            parts.append(f"Concert created (id: {cid})")
+        else:
+            parts.append(f"Concert deleted (id: {cid})")
+    else:
+        # Fallback: show pretty JSON
+        try:
+            parts.append(_html.escape(json.dumps(meta, ensure_ascii=False, indent=2)))
+        except Exception:
+            parts.append(_html.escape(str(meta)))
+
+    return Markup('<br/>'.join(parts))
 
 
 def audit_entries_since(schedule: dict, since_ts: Optional[int]) -> List[dict]:
@@ -1196,20 +1290,192 @@ def notify_schedule_update(schedule: dict, description: str, actor: Optional[dic
 
     schedule_link = url_for("schedule_view", schedule_id=schedule_id, _external=True)
     base_message = (description or _default_notification_body(ensemble_name)).strip()
-    safe_message = _sanitize_message_html(base_message.replace("\r\n", "\n")).replace("\n", "<br>")
+    # Split provided base_message into message body and any explicit sign-off (e.g., "Best wishes,\nJack")
+    lines = (base_message or "").replace("\r\n", "\n").split("\n")
+    signoff_start = None
+    for idx, ln in enumerate(lines):
+        if re.match(r"^\s*(best wishes|kind regards|regards|sincerely|thanks),?\s*$", ln, flags=re.IGNORECASE):
+            signoff_start = idx
+            break
+
+    if signoff_start is not None:
+        message_body = "\n".join(lines[:signoff_start]).strip()
+        signoff_lines = [l for l in lines[signoff_start:] if l is not None]
+    else:
+        message_body = base_message
+        signoff_lines = []
+
+    safe_message = _sanitize_message_html((message_body or "").replace("\r\n", "\n")).replace("\n", "<br>")
     subject = (subject_override or _default_notification_subject(ensemble_name) or "").strip() or _default_notification_subject(ensemble_name)
 
-    # Detect if the user already included link or sign-off to avoid duplicates
+    # Detect if the user already included link to avoid duplicates
     include_link_paragraph = schedule_link not in base_message
-    include_signoff = not re.search(r"best wishes", base_message, flags=re.IGNORECASE)
+    include_signoff = bool(signoff_lines) is False and not re.search(r"best wishes", base_message, flags=re.IGNORECASE)
 
     # Gather changes since last notification
     changes = audit_entries_since(schedule, schedule.get("last_notified_at"))
+    def _format_meta_changes(meta: dict) -> str:
+        # Simplified HTML change lines: only include change type, rehearsal number and date,
+        # and concert title/date when available.
+        parts = []
+        chs = meta.get('changes') if isinstance(meta, dict) else None
+        if not chs:
+            return ''
+
+        # If changes are field-level diffs (e.g., concert_updated / rehearsal_update),
+        # render concise sentences like "Programme updated for <concert> on <date>".
+        first = chs[0] if isinstance(chs, list) and chs else None
+        if isinstance(first, dict) and ('field' in first or 'name' in first):
+            # concert_id may be present in meta
+            cid = meta.get('concert_id') or meta.get('id')
+            concert = None
+            if ensemble and cid:
+                concert = next((c for c in ensemble.get('concerts', []) if c.get('id') == cid), None)
+            concert_title = concert.get('title') if concert else (meta.get('title') or meta.get('concert_title') or '')
+            concert_date = concert.get('date') if concert else (meta.get('date') or '')
+            # If programme changed, call that out specifically
+            prog_changed = any((c.get('field') or '').lower() == 'programme' for c in chs)
+            if prog_changed:
+                if concert_title:
+                    parts.append(f"Programme updated for {html.escape(str(concert_title))} on {html.escape(str(uk_date_format(concert_date) or concert_date or 'Date TBC'))}")
+                else:
+                    parts.append("Programme updated")
+                return '<br/>'.join(parts)
+            # Otherwise summarize changes
+            if concert_title:
+                parts.append(f"Concert updated: {html.escape(str(concert_title))} on {html.escape(str(uk_date_format(concert_date) or concert_date or 'Date TBC'))} ({len(chs)} change(s))")
+            else:
+                parts.append(f"Updated ({len(chs)} change(s))")
+            return '<br/>'.join(parts)
+
+        # helper to look up rehearsal date and concert info from the schedule
+        def _reh_info(reh_num):
+            try:
+                reh_num_i = int(reh_num)
+            except Exception:
+                return None, None, None
+            reh_row = next((r for r in schedule.get('rehearsals', []) if int(r.get('Rehearsal', -1)) == reh_num_i), None)
+            reh_date = reh_row.get('Date') if reh_row else None
+            # find linked concert (by concert_id on rehearsal or matching date)
+            concert_title = None
+            concert_date = None
+            if ensemble:
+                concerts = [c for c in ensemble.get('concerts', []) if c.get('schedule_id') == schedule.get('id')]
+                # match by concert_id on rehearsal
+                if reh_row and reh_row.get('concert_id'):
+                    cid = reh_row.get('concert_id')
+                    concert = next((c for c in concerts if c.get('id') == cid), None)
+                    if concert:
+                        concert_title = concert.get('title')
+                        concert_date = concert.get('date')
+                # fallback: match by date
+                if not concert_title and reh_date:
+                    for c in concerts:
+                        if str(c.get('date', ''))[:10] == str(reh_date)[:10]:
+                            concert_title = c.get('title')
+                            concert_date = c.get('date')
+                            break
+            return reh_num_i, reh_date, (concert_title, concert_date)
+
+        # Aggregate non-move changes by (type, rehearsal) to reduce verbosity
+        agg = {}
+        moved_entries = []
+        for c in chs:
+            ctype = (c.get('type') or c.get('action') or 'change')
+            reh = c.get('rehearsal')
+            if reh is None:
+                if c.get('to'):
+                    reh = c.get('to')[0]
+                elif c.get('from'):
+                    reh = c.get('from')[0]
+
+            if ctype == 'moved':
+                moved_entries.append(c)
+                continue
+
+            try:
+                reh_i = int(reh) if reh is not None else None
+            except Exception:
+                reh_i = None
+
+            key = (ctype, reh_i)
+            agg.setdefault(key, {'count': 0, 'examples': [], 'reh': reh_i})
+            agg[key]['count'] += 1
+            agg[key]['examples'].append(c)
+
+        # Build sentences for aggregated changes
+        for (ctype, reh_i), info in agg.items():
+            label = ''
+            if ctype == 'row_removed':
+                label = 'Items removed'
+            elif ctype == 'row_added':
+                label = 'Items added'
+            elif ctype == 'duration_changed':
+                label = 'Time changes'
+            else:
+                label = str(ctype).replace('_', ' ').capitalize()
+
+            reh_date = None
+            concert_title = None
+            concert_date = None
+            if reh_i is not None:
+                reh_date = next((r.get('Date') for r in schedule.get('rehearsals', []) if int(r.get('Rehearsal', -1)) == reh_i), None)
+                # find concert if any
+                if ensemble:
+                    concerts = [c for c in ensemble.get('concerts', []) if c.get('schedule_id') == schedule.get('id')]
+                    concert = next((c for c in concerts if str(c.get('date',''))[:10] == str(reh_date)[:10]), None)
+                    if concert:
+                        concert_title = concert.get('title')
+                        concert_date = concert.get('date')
+
+            date_txt = uk_date_format(reh_date) if reh_date else 'Date TBC'
+            concert_txt = f" — {html.escape(str(concert_title))} on {html.escape(str(uk_date_format(concert_date) or concert_date or 'Date TBC'))}" if concert_title else ''
+
+            if reh_i is not None:
+                cnt = info['count']
+                if cnt > 1:
+                    parts.append(f"{label}: {cnt} items on rehearsal {reh_i}, {html.escape(str(date_txt))}{concert_txt}")
+                else:
+                    parts.append(f"{label} on rehearsal {reh_i}, {html.escape(str(date_txt))}{concert_txt}")
+            else:
+                parts.append(f"{label}: {html.escape(str(info['examples'][0]))}")
+
+        # Add moved entries as short lines
+        for m in moved_entries:
+            title = m.get('title') or m.get('name') or ''
+            frm = m.get('from') or []
+            to = m.get('to') or []
+            frm_txt = ','.join(map(str, frm)) if frm else ''
+            to_txt = ','.join(map(str, to)) if to else ''
+            if frm_txt and to_txt:
+                parts.append(f"Moved items: from rehearsals {html.escape(frm_txt)} to {html.escape(to_txt)}")
+            else:
+                parts.append("Moved items")
+
+        return '<br/>'.join(parts)
+
     def format_change(entry: dict) -> str:
         actor_label = entry.get("actor_name") or entry.get("actor_email") or ""
         actor_txt = f" — {html.escape(actor_label)}" if actor_label else ""
-        return f"<li><strong>{html.escape(entry.get('action',''))}</strong>: {html.escape(entry.get('description',''))}{actor_txt}</li>"
-    changes_html = "".join(format_change(e) for e in changes[:10])
+        base = f"<li><strong>{html.escape(entry.get('action',''))}</strong>: {html.escape(entry.get('description',''))}{actor_txt}"
+        meta_html = _format_meta_changes(entry.get('meta') or {})
+        if meta_html:
+            base += f"<div style=\"margin-left:8px; margin-top:6px; font-size:0.95rem; color:#374151;\">{meta_html}</div>"
+        base += "</li>"
+        return base
+
+    # Build simplified change HTML using the helper that reads schedule/ensemble context
+    def _simple_change_html(e: dict) -> str:
+        actor_label = e.get("actor_name") or e.get("actor_email") or ""
+        actor_txt = f" — {html.escape(actor_label)}" if actor_label else ""
+        c_meta_html = _format_meta_changes(e.get('meta') or {})
+        base = f"<li><strong>{html.escape(e.get('action',''))}</strong>: {html.escape(e.get('description',''))}{actor_txt}"
+        if c_meta_html:
+            base += f"<div style=\"margin-left:8px; margin-top:6px; font-size:0.95rem; color:#374151;\">{c_meta_html}</div>"
+        base += "</li>"
+        return base
+
+    changes_html = "".join(_simple_change_html(e) for e in changes[:10])
     if len(changes) > 10:
         changes_html += f"<li>…and {len(changes)-10} more</li>"
 
@@ -1219,34 +1485,42 @@ def notify_schedule_update(schedule: dict, description: str, actor: Optional[dic
         first_name = r.get("first_name") or (r.get("name") or "").split(" ")[0] or r.get("email") or "there"
         greeting = html.escape(first_name)
 
-        body_parts = [
-            f"<p>Hi {greeting},</p>",
-            f"<p>{safe_message}</p>",
-        ]
+        # Assemble HTML: greeting, message body, updates, link, then sign-off (explicit or default)
+        body_parts = [f"<p>Hi {greeting},</p>", f"<p>{safe_message}</p>"]
         if changes_html:
             body_parts.append("<p>Updates:</p><ul>" + changes_html + "</ul>")
         else:
             body_parts.append("<p>Updates were made, but there are no detailed items to show.</p>")
         if include_link_paragraph:
             body_parts.append(f"<p>Check out the rehearsal schedule <a href='{schedule_link}'>here</a>.</p>")
-        if include_signoff:
+
+        # Append explicit sign-off lines (if the user included them) or the default sign-off
+        if signoff_lines:
+            sf_html = _sanitize_message_html("\n".join(signoff_lines)).replace("\n", "<br>")
+            body_parts.append(sf_html)
+        elif include_signoff:
             body_parts.append("<p>Best wishes,</p>")
             body_parts.append("<p>Jack</p>")
+
         html_body = "\n".join(body_parts)
 
         text_greeting = first_name or r.get('email') or 'there'
         plain_message = _html_to_plain_text(safe_message)
 
-        text_lines = [
-            f"Hi {text_greeting},",
-            "",
-            plain_message,
-        ]
+        # Plain-text assembly: place changes before sign-off
+        text_lines = [f"Hi {text_greeting},", "", plain_message]
         if changes:
             for e in changes[:10]:
                 actor_label = e.get("actor_name") or e.get("actor_email") or ""
                 actor_txt = f" — {actor_label}" if actor_label else ""
+                meta_html = _format_meta_changes(e.get('meta') or {})
+                meta_text = _html_to_plain_text(meta_html)
                 text_lines.append(f"- {e.get('action')}: {e.get('description')}{actor_txt}")
+                if meta_text:
+                    # indent the meta details slightly for readability
+                    for ml in meta_text.split('\n'):
+                        if ml.strip():
+                            text_lines.append(f"  {ml}")
             if len(changes) > 10:
                 text_lines.append(f"…and {len(changes)-10} more")
         else:
@@ -1255,9 +1529,14 @@ def notify_schedule_update(schedule: dict, description: str, actor: Optional[dic
         if include_link_paragraph:
             text_lines.append(f"Check out the rehearsal schedule here: {schedule_link}")
             text_lines.append("")
-        if include_signoff:
+
+        # Append explicit sign-off lines (if provided) or default
+        if signoff_lines:
+            text_lines.extend([l for l in signoff_lines if l is not None and l.strip() != ""]) 
+        elif include_signoff:
             text_lines.append("Best wishes,")
             text_lines.append("Jack")
+
         text_body = "\n".join(text_lines)
 
         sent = brevo_send_email([r["email"]], subject, html_body, text_body, bcc_mode=False)
@@ -2579,13 +2858,21 @@ def api_get_rehearsal_concerts(schedule_id, rehearsal_num):
     s = load_schedule(schedule_id)
     if not s: abort(404)
 
-    concerts = load_concerts()
-    concerts_data = concerts.get("concerts", [])
+    # Get concerts from the schedule's ensemble
+    ensemble_id = s.get("ensemble_id")
+    if not ensemble_id:
+        return jsonify({"concerts": []})
+    
+    ensembles = load_ensembles()
+    ensemble = next((e for e in ensembles if e.get("id") == ensemble_id), None)
+    if not ensemble:
+        return jsonify({"concerts": []})
+    
+    concerts_data = ensemble.get("concerts", [])
     associated_concerts = [
         {"id": c.get("id"), "title": c.get("title"), "date": c.get("date")}
         for c in concerts_data 
-        if (c.get("ensemble_id") == s.get("ensemble_id") 
-           and c.get("schedule_id") == schedule_id 
+        if (c.get("schedule_id") == schedule_id 
            and int(c.get("rehearsal_num", -1)) == rehearsal_num)
     ]
     
@@ -2658,13 +2945,15 @@ def api_delete_rehearsal(schedule_id, rehearsal_num):
     s = load_schedule(schedule_id)
     if not s: abort(404)
 
-    # Get associated concerts before deletion
-    concerts = load_concerts()
-    concerts_data = concerts.get("concerts", [])
+    # Get concerts from the schedule's ensemble
+    ensemble_id = s.get("ensemble_id")
+    ensembles = load_ensembles() if ensemble_id else []
+    ensemble = next((e for e in ensembles if e.get("id") == ensemble_id), None)
+    
+    concerts_data = ensemble.get("concerts", []) if ensemble else []
     associated_concerts = [
         c for c in concerts_data 
-        if (c.get("ensemble_id") == s.get("ensemble_id") 
-           and c.get("schedule_id") == schedule_id 
+        if (c.get("schedule_id") == schedule_id 
            and int(c.get("rehearsal_num", -1)) == rehearsal_num)
     ]
     
@@ -2706,11 +2995,11 @@ def api_delete_rehearsal(schedule_id, rehearsal_num):
                 if k_num not in valid_reh_nums:
                     del row[k]
 
-    # Remove only selected concerts
-    if concert_ids_to_delete:
+    # Remove only selected concerts from the ensemble
+    if concert_ids_to_delete and ensemble:
         concerts_data = [c for c in concerts_data if c.get("id") not in concert_ids_to_delete]
-        concerts["concerts"] = concerts_data
-        save_concerts(concerts)
+        ensemble["concerts"] = concerts_data
+        save_ensembles(ensembles)
 
     s["updated_at"] = int(time.time())
     add_audit_entry(s, action="delete_rehearsal", description=f"Deleted rehearsal {rehearsal_num}", actor=actor)
@@ -2762,7 +3051,10 @@ def api_timed_edit(schedule_id):
 
     # Update timed schedule and clean up missing Section values
     timed_updates = clean_timed_data(timed_updates)
-    s["timed"] = timed_updates
+    # Prepare new timed and compute diffs against previous snapshot for richer audit
+    old_timed = history_entry.get("timed") if 'history_entry' in locals() else []
+    new_timed = clean_timed_data(timed_updates)
+    s["timed"] = new_timed
     s["updated_at"] = int(time.time())
     
     # Recalculate allocation from the new timed data
@@ -2856,6 +3148,84 @@ def api_timed_edit(schedule_id):
         print(f"  Updated {updated_count} schedule rows with new durations")
     
     save_schedule(s)
+
+    # Compute human-readable changes between old_timed and new_timed
+    try:
+        def _build_aggregates(timed_list):
+            # aggregates durations per (title, rehearsal)
+            agg = {}
+            for row in (timed_list or []):
+                title = (row.get("Title") or "").strip()
+                try:
+                    reh = int(row.get("Rehearsal") or 0)
+                except Exception:
+                    reh = 0
+                dur = row.get("Rehearsal Time (minutes)") or row.get("Time in Rehearsal") or 0
+                try:
+                    dur = int(dur)
+                except Exception:
+                    dur = 0
+                agg.setdefault(title, {}).setdefault(reh, 0)
+                agg[title][reh] += dur
+            return agg
+
+        def _build_row_signatures(timed_list):
+            # Exact row signatures to detect added/removed rows
+            sigs = set()
+            for row in (timed_list or []):
+                title = (row.get("Title") or "").strip()
+                try:
+                    reh = int(row.get("Rehearsal") or 0)
+                except Exception:
+                    reh = 0
+                dur = row.get("Rehearsal Time (minutes)") or row.get("Time in Rehearsal") or 0
+                time_str = str(row.get("Time in Rehearsal") or row.get("Rehearsal Time (minutes)") or "")
+                sigs.add((title, reh, str(dur), time_str))
+            return sigs
+
+        old_agg = _build_aggregates(old_timed)
+        new_agg = _build_aggregates(new_timed)
+        old_sigs = _build_row_signatures(old_timed)
+        new_sigs = _build_row_signatures(new_timed)
+
+        changes = []
+
+        # Detect removed and added exact rows
+        removed = sorted(list(old_sigs - new_sigs))
+        added = sorted(list(new_sigs - old_sigs))
+        for r in removed:
+            changes.append({"type": "row_removed", "title": r[0], "rehearsal": r[1], "duration": int(r[2]) if r[2].isdigit() else r[2], "time": r[3]})
+        for a in added:
+            changes.append({"type": "row_added", "title": a[0], "rehearsal": a[1], "duration": int(a[2]) if a[2].isdigit() else a[2], "time": a[3]})
+
+        # Detect moved rehearsals per title
+        titles = set(list(old_agg.keys()) + list(new_agg.keys()))
+        for t in sorted(titles):
+            old_rehs = set(old_agg.get(t, {}).keys())
+            new_rehs = set(new_agg.get(t, {}).keys())
+            if old_rehs and new_rehs and old_rehs != new_rehs:
+                changes.append({"type": "moved", "title": t, "from": sorted(list(old_rehs)), "to": sorted(list(new_rehs))})
+
+        # Detect duration changes per (title, rehearsal)
+        common_titles = set(old_agg.keys()) & set(new_agg.keys())
+        for t in sorted(common_titles):
+            rehs = set(old_agg.get(t, {}).keys()) & set(new_agg.get(t, {}).keys())
+            for reh in sorted(rehs):
+                old_d = old_agg[t].get(reh, 0)
+                new_d = new_agg[t].get(reh, 0)
+                if old_d != new_d:
+                    changes.append({"type": "duration_changed", "title": t, "rehearsal": reh, "old": old_d, "new": new_d})
+
+        short_summary = f"{len(changes)} change(s)"
+        add_audit_entry(s, action="timed_edit", description=f"Timed edit ({action}): {short_summary}", actor=actor, meta={"action": action, "count": len(timed_updates), "changes": changes})
+        # Persist the audit entry we just added
+        try:
+            save_schedule(s)
+            print(f"[AUDIT] Saved timed_edit audit for schedule {schedule_id} ({short_summary})")
+        except Exception as e:
+            print(f"[AUDIT] Failed to save schedule after adding timed_edit audit: {e}")
+    except Exception as e:
+        print(f"[AUDIT] Failed to compute timed diff: {e}")
     
     # Log for verification
     print(f"✓ Saved {len(timed_updates)} timed entries to schedule {schedule_id}")
@@ -3078,6 +3448,8 @@ def api_update_rehearsal(schedule_id, rehearsal_num):
     for row in rehearsals_data:
         if int(row.get("Rehearsal", 0)) == rehearsal_num:
             print(f"[DEBUG] Found rehearsal {rehearsal_num}")
+            # Keep copy of previous state for audit diff
+            old_row = dict(row)
             # Update the fields provided
             if "date" in data:
                 row["Date"] = data["date"]
@@ -3296,7 +3668,36 @@ def api_update_rehearsal(schedule_id, rehearsal_num):
     s["timed"] = clean_timed_data(timed_data)
     
     s["updated_at"] = int(time.time())
-    add_audit_entry(s, action="rehearsal_update", description=f"Rehearsal {rehearsal_num} updated", actor=current_user(), meta={"rehearsal": rehearsal_num, "fields": list(data.keys())})
+    # Build detailed change list
+    try:
+        changes = []
+        for k in data.keys():
+            old = old_row.get(k) if 'old_row' in locals() else None
+            # Map input keys to stored field names where needed
+            field_map = {
+                'start_time': 'Start Time',
+                'end_time': 'End Time',
+                'event': 'Event',
+                'include_in_allocation': 'Include in allocation',
+                'section': 'Section',
+                'event_type': 'Event Type',
+                'venue': 'Venue',
+                'uniform': 'Uniform',
+                'time': 'Time',
+                'work': 'work',
+                'date': 'Date',
+            }
+            stored_key = field_map.get(k, k)
+            old_val = old_row.get(stored_key) if 'old_row' in locals() else None
+            new_val = None
+            # derive new_val from updated_row
+            if updated_row:
+                new_val = updated_row.get(stored_key)
+            if (old_val or None) != (new_val or None):
+                changes.append({"field": stored_key, "old": old_val, "new": new_val})
+        add_audit_entry(s, action="rehearsal_update", description=f"Rehearsal {rehearsal_num} updated ({len(changes)} change(s))", actor=current_user(), meta={"rehearsal": rehearsal_num, "changes": changes})
+    except Exception as e:
+        print(f"[AUDIT] Failed to compute rehearsal diffs: {e}")
     save_schedule(s)
     
     return jsonify({"ok": True, "rehearsal": rehearsal_num, "updated": data})
@@ -3717,6 +4118,13 @@ def schedule_view(schedule_id):
 
     reh_order = sorted(by_reh.items(), key=reh_sort_key)
 
+    # Build map of rehearsal num to conducting log (if exists)
+    conducting_logs_by_reh = {}
+    for log in s.get("conducting_logs", []):
+        reh_num = log.get("rehearsal_num")
+        if reh_num:
+            conducting_logs_by_reh[reh_num] = log
+
     timed = pd.DataFrame(timed_data)
     response = render_template(
         "view.html",
@@ -3727,6 +4135,7 @@ def schedule_view(schedule_id):
         user=u,
         concerts=linked_concerts,
         reh_order=reh_order,
+        conducting_logs=conducting_logs_by_reh,
     )
     # Prevent caching so members see fresh data
     return response, 200, {"Cache-Control": "no-cache, no-store, must-revalidate", "Pragma": "no-cache", "Expires": "0"}
@@ -4611,6 +5020,11 @@ def api_member_rehearsals():
     ensemble_map = {e["id"]: e["name"] for e in ensembles}
     
     for sched in schedule_summaries:
+        # Safety check: ensure schedule has an id
+        if not sched or not sched.get("id"):
+            print(f"  [WARNING] Skipping schedule without id: {sched}")
+            continue
+            
         schedule_id = sched["id"]
         ensemble_id = sched.get("ensemble_id")
         ensemble_name = ensemble_map.get(ensemble_id, "Unknown")
@@ -5489,7 +5903,7 @@ def api_schedule_import_complete(schedule_id):
                 placeholder_row["concert_id"] = reh_row["concert_id"]
             timed_data.append(placeholder_row)
     
-    s["timed"] = timed_data
+    s["timed"] = sanitize_df_records(timed_data)
     s["works"] = []  # No separate works needed
     s["works_cols"] = []
     s["allocation"] = []  # Skip allocation since we have pre-built schedule
@@ -5547,7 +5961,7 @@ def api_update_rehearsal_schedule():
     # Use prepare_all_rehearsals to include non-allocated rehearsals (sectionals)
     rehe_prep = prepare_all_rehearsals(rehearsals)
     timed = compute_timed_df(sched2, rehe_prep)
-    s["timed"] = timed.to_dict(orient="records")
+    s["timed"] = sanitize_df_records(timed.to_dict(orient="records"))
     s["generated_at"] = pd.Timestamp.utcnow().isoformat() + "Z"
 
     save_schedule(s)
@@ -6414,6 +6828,220 @@ def admin_disable_invitation(invitation_id):
     save_invitations(invites)
     
     return redirect(url_for("admin_view_invitations", ensemble_id=invite["ensemble_id"]))
+
+
+# ----------------------------
+# Conductor Mode
+# ----------------------------
+@app.get("/conduct/<schedule_id>/<int:rehearsal_num>")
+def conduct_view(schedule_id, rehearsal_num):
+    """Full-screen conductor view for live rehearsal tracking"""
+    s = load_schedule(schedule_id)
+    if not s:
+        abort(404)
+    
+    u = current_user()
+    # Permissions: Must be logged in and either admin or member of ensemble
+    if not u:
+        return redirect(url_for("login_page"))
+    
+    if not u.get("is_admin"):
+        r = ensemble_member_required_or_403(s["ensemble_id"])
+        if r: return r
+    
+    # Get rehearsal
+    rehearsal = next((r for r in s.get("rehearsals", []) if int(r.get("Rehearsal", 0)) == rehearsal_num), None)
+    if not rehearsal:
+        abort(404)
+    
+    return render_template("conduct.html",
+                          schedule_id=schedule_id,
+                          rehearsal_num=rehearsal_num,
+                          schedule_name=s.get("name", "Untitled"),
+                          user=u)
+
+@app.get("/api/s/<schedule_id>/conduct/<int:rehearsal_num>/data")
+def conduct_get_data(schedule_id, rehearsal_num):
+    """Get rehearsal data for conductor mode"""
+    s = load_schedule(schedule_id)
+    if not s:
+        abort(404)
+    
+    u = current_user()
+    if not u:
+        return jsonify({"error": "Not logged in"}), 401
+    
+    if not u.get("is_admin"):
+        r = ensemble_member_required_or_403(s["ensemble_id"])
+        if r: return r
+    
+    # Get rehearsal
+    rehearsal = next((r for r in s.get("rehearsals", []) if int(r.get("Rehearsal", 0)) == rehearsal_num), None)
+    if not rehearsal:
+        return jsonify({"error": "Rehearsal not found"}), 404
+    
+    # Get timed schedule for this rehearsal
+    timed_items = [t for t in s.get("timed", []) if int(t.get("Rehearsal", 0)) == rehearsal_num]
+    
+    # Get existing conducting log if any
+    existing_log = next((log for log in s.get("conducting_logs", []) if log.get("rehearsal_num") == rehearsal_num), None)
+    
+    return jsonify({
+        "ok": True,
+        "rehearsal": rehearsal,
+        "timed_items": timed_items,
+        "existing_log": existing_log,
+        "schedule_name": s.get("name", "Untitled")
+    })
+
+@app.get("/api/s/<schedule_id>/conducting_insights")
+def get_conducting_insights(schedule_id):
+    """Get aggregated conducting data for variance insights"""
+    s = load_schedule(schedule_id)
+    if not s:
+        abort(404)
+    
+    u = current_user()
+    if not u:
+        return jsonify({"error": "Not logged in"}), 401
+    
+    if not u.get("is_admin"):
+        r = ensemble_member_required_or_403(s["ensemble_id"])
+        if r: return r
+    
+    # Aggregate conducting logs by work title
+    work_insights = {}
+    
+    for log in s.get("conducting_logs", []):
+        for item in log.get("items", []):
+            if item.get("status") != "completed":
+                continue
+            
+            title = item.get("title", "Unknown")
+            actual_secs = item.get("actual_duration_seconds", 0) or (item.get("actual_duration", 0) * 60)
+            scheduled_secs = item.get("scheduled_duration_seconds", 0) or (item.get("scheduled_duration", 0) * 60)
+            
+            if not scheduled_secs:
+                continue
+            
+            if title not in work_insights:
+                work_insights[title] = {
+                    "title": title,
+                    "rehearsals": [],
+                    "total_times": 0,
+                    "avg_actual_seconds": 0,
+                    "avg_scheduled_seconds": 0,
+                    "avg_variance_seconds": 0,
+                    "avg_variance_pct": 0
+                }
+            
+            variance_secs = actual_secs - scheduled_secs
+            variance_pct = (variance_secs / scheduled_secs * 100) if scheduled_secs else 0
+            
+            work_insights[title]["rehearsals"].append({
+                "rehearsal_num": log.get("rehearsal_num"),
+                "rehearsal_date": next((r.get("Date") for r in s.get("rehearsals", []) if r.get("Rehearsal") == log.get("rehearsal_num")), None),
+                "actual_seconds": actual_secs,
+                "scheduled_seconds": scheduled_secs,
+                "variance_seconds": variance_secs,
+                "variance_pct": variance_pct
+            })
+    
+    # Calculate averages
+    for title, data in work_insights.items():
+        count = len(data["rehearsals"])
+        if count > 0:
+            data["total_times"] = count
+            data["avg_actual_seconds"] = sum(r["actual_seconds"] for r in data["rehearsals"]) / count
+            data["avg_scheduled_seconds"] = sum(r["scheduled_seconds"] for r in data["rehearsals"]) / count
+            data["avg_variance_seconds"] = sum(r["variance_seconds"] for r in data["rehearsals"]) / count
+            data["avg_variance_pct"] = sum(r["variance_pct"] for r in data["rehearsals"]) / count
+    
+    return jsonify({
+        "ok": True,
+        "insights": list(work_insights.values())
+    })
+
+
+@app.post("/api/s/<schedule_id>/conduct/<int:rehearsal_num>/log")
+def conduct_save_log(schedule_id, rehearsal_num):
+    """Save conducting log"""
+    s = load_schedule(schedule_id)
+    if not s:
+        abort(404)
+    
+    u = current_user()
+    if not u:
+        return jsonify({"error": "Not logged in"}), 401
+    
+    if not u.get("is_admin"):
+        r = ensemble_member_required_or_403(s["ensemble_id"])
+        if r: return r
+    
+    data = request.get_json() or {}
+    log_data = data.get("log", {})
+    
+    # Validate log structure
+    if not log_data.get("rehearsal_num") or not log_data.get("items"):
+        return jsonify({"error": "Invalid log data"}), 400
+    
+    # Add conductor info
+    log_data["conducted_by"] = u.get("id")
+    log_data["saved_at"] = int(time.time())
+    
+    # Find and replace existing log for this rehearsal, or append new
+    logs = s.get("conducting_logs", [])
+    existing_idx = next((i for i, log in enumerate(logs) if log.get("rehearsal_num") == rehearsal_num), None)
+    
+    if existing_idx is not None:
+        logs[existing_idx] = log_data
+    else:
+        logs.append(log_data)
+    
+    s["conducting_logs"] = logs
+    s["updated_at"] = int(time.time())
+    save_schedule(s)
+    
+    return jsonify({"ok": True})
+
+@app.get("/conduct/<schedule_id>/<int:rehearsal_num>/report")
+def conduct_report_view(schedule_id, rehearsal_num):
+    """View post-rehearsal report"""
+    s = load_schedule(schedule_id)
+    if not s:
+        abort(404)
+    
+    u = current_user()
+    if not u:
+        return redirect(url_for("login_page"))
+    
+    # Permissions: Admin or member of ensemble
+    if not u.get("is_admin"):
+        r = ensemble_member_required_or_403(s["ensemble_id"])
+        if r: return r
+    
+    # Get conducting log
+    log = next((log for log in s.get("conducting_logs", []) if log.get("rehearsal_num") == rehearsal_num), None)
+    if not log:
+        abort(404, description="No conducting log found for this rehearsal")
+    
+    # Get rehearsal details
+    rehearsal = next((r for r in s.get("rehearsals", []) if int(r.get("Rehearsal", 0)) == rehearsal_num), None)
+    
+    # Get conductor name
+    conductor_user = None
+    if log.get("conducted_by"):
+        users = load_users()
+        conductor_user = next((usr for usr in users if usr.get("id") == log.get("conducted_by")), None)
+    
+    return render_template("conduct_report.html",
+                          schedule_id=schedule_id,
+                          schedule_name=s.get("name", "Untitled"),
+                          rehearsal_num=rehearsal_num,
+                          rehearsal=rehearsal,
+                          log=log,
+                          conductor=conductor_user,
+                          user=u)
 
 
 # ----------------------------

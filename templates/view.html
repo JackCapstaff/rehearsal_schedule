@@ -248,9 +248,22 @@
 
               <!-- Attendance Register for Admins -->
               {% if user and user.is_admin %}
-                <div style="padding: 10px; background: #f1f5f9; border-bottom: 1px solid #cbd5e1; margin-bottom: 10px;">
-                  <a href="#" onclick="showAttendanceRegister({{ reh_num }}); return false;" class="btn btn-sm">View Attendance Register</a>
-                  <div id="attendance-register-{{ reh_num }}" style="display:none; margin-top:10px;"></div>
+                <div style="padding: 10px; background: #f1f5f9; border-bottom: 1px solid #cbd5e1; margin-bottom: 10px; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px;">
+                  <div style="display: flex; gap: 8px;">
+                    <a href="#" onclick="showAttendanceRegister({{ reh_num }}); return false;" class="btn btn-sm">View Attendance Register</a>
+                    {% if conducting_logs and conducting_logs.get(reh_num) %}
+                      <a href="/conduct/{{ schedule_id }}/{{ reh_num }}/report" class="btn btn-sm" style="background: #3b82f6; color: white;">
+                        <i class="bi bi-file-text"></i> View Report
+                      </a>
+                    {% endif %}
+                  </div>
+                  <div>
+                    <a href="/conduct/{{ schedule_id }}/{{ reh_num }}" class="btn btn-sm" style="background: #10b981; color: white;">
+                      <i class="bi bi-play-circle-fill"></i> Start Conducting
+                    </a>
+                  </div>
+                </div>
+                  <div id="attendance-register-{{ reh_num }}" style="display:none; margin:10px; padding:10px; background:#f9fafb; border-radius:6px;"></div>
                   <script>
                     function showAttendanceRegister(rehNum) {
                       var regDiv = document.getElementById('attendance-register-' + rehNum);
@@ -274,6 +287,19 @@
                       }
                     }
                   </script>
+              {% elif user %}
+                <!-- Non-admin conductors can also start conducting -->
+                <div style="padding: 10px; background: #f1f5f9; border-bottom: 1px solid #cbd5e1; margin-bottom: 10px; display: flex; justify-content: space-between; align-items: center; gap: 8px;">
+                  {% if conducting_logs and conducting_logs.get(reh_num) %}
+                    <a href="/conduct/{{ schedule_id }}/{{ reh_num }}/report" class="btn btn-sm" style="background: #3b82f6; color: white;">
+                      <i class="bi bi-file-text"></i> View Report
+                    </a>
+                  {% else %}
+                    <div></div>
+                  {% endif %}
+                  <a href="/conduct/{{ schedule_id }}/{{ reh_num }}" class="btn btn-sm" style="background: #10b981; color: white;">
+                    <i class="bi bi-play-circle-fill"></i> Start Conducting
+                  </a>
                 </div>
               {% endif %}
             <table style="margin:0; width:100%;">

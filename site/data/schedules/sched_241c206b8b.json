@@ -5,7 +5,7 @@
   "status": "published",
   "created_by": "872bf6d3b5bd45a1824cfb04c105c1ad",
   "created_at": 1769695755,
-  "updated_at": 1769703588,
+  "updated_at": 1770313927,
   "G": 5,
   "works": [],
   "rehearsals": [
@@ -322,7 +322,7 @@
       "Section": "Full",
       "Date": "2026-01-22 00:00:00",
       "Event Type": "Rehearsal",
-      "concert_id": NaN
+      "concert_id": null
     },
     {
       "_index": 1,
@@ -335,7 +335,7 @@
       "Section": "Full",
       "Date": "2026-01-22 00:00:00",
       "Event Type": "Rehearsal",
-      "concert_id": NaN
+      "concert_id": null
     },
     {
       "_index": 2,
@@ -348,7 +348,7 @@
       "Section": "Full",
       "Date": "2026-01-22 00:00:00",
       "Event Type": "Rehearsal",
-      "concert_id": NaN
+      "concert_id": null
     },
     {
       "_index": 3,
@@ -361,7 +361,7 @@
       "Section": "Full",
       "Date": "2026-01-22 00:00:00",
       "Event Type": "Rehearsal",
-      "concert_id": NaN
+      "concert_id": null
     },
     {
       "_index": 4,
@@ -374,7 +374,7 @@
       "Section": "Full",
       "Date": "2026-01-22 00:00:00",
       "Event Type": "Rehearsal",
-      "concert_id": NaN
+      "concert_id": null
     },
     {
       "_index": 5,
@@ -387,7 +387,7 @@
       "Section": "Full",
       "Date": "2026-01-22 00:00:00",
       "Event Type": "Rehearsal",
-      "concert_id": NaN
+      "concert_id": null
     },
     {
       "_index": 6,
@@ -400,7 +400,7 @@
       "Section": "Full",
       "Date": "2026-01-22 00:00:00",
       "Event Type": "Rehearsal",
-      "concert_id": NaN
+      "concert_id": null
     },
     {
       "_index": 7,
@@ -413,7 +413,7 @@
       "Section": "Full",
       "Date": "2026-01-22 00:00:00",
       "Event Type": "Rehearsal",
-      "concert_id": NaN
+      "concert_id": null
     },
     {
       "_index": 9,
@@ -426,7 +426,7 @@
       "Section": "Horns",
       "Date": "2026-01-24",
       "Event Type": "Sectional",
-      "concert_id": NaN
+      "concert_id": null
     },
     {
       "_index": 10,
@@ -439,7 +439,7 @@
       "Section": "Horns",
       "Date": "2026-01-24",
       "Event Type": "Sectional",
-      "concert_id": NaN
+      "concert_id": null
     },
     {
       "_index": 11,
@@ -452,7 +452,7 @@
       "Section": "Horns",
       "Date": "2026-01-24",
       "Event Type": "Sectional",
-      "concert_id": NaN
+      "concert_id": null
     },
     {
       "_index": 12,
@@ -465,7 +465,7 @@
       "Section": "Horns",
       "Date": "2026-01-24",
       "Event Type": "Sectional",
-      "concert_id": NaN
+      "concert_id": null
     },
     {
       "_index": 15,
@@ -478,7 +478,7 @@
       "Section": "Percussion",
       "Date": "2026-01-25",
       "Event Type": "Sectional",
-      "concert_id": NaN
+      "concert_id": null
     },
     {
       "_index": 17,
@@ -491,7 +491,7 @@
       "Section": "Full",
       "Date": "2026-01-29 00:00:00",
       "Event Type": "Rehearsal",
-      "concert_id": NaN
+      "concert_id": null
     },
     {
       "_index": 18,
@@ -504,7 +504,7 @@
       "Section": "Full",
       "Date": "2026-01-29 00:00:00",
       "Event Type": "Rehearsal",
-      "concert_id": NaN
+      "concert_id": null
     },
     {
       "_index": 19,
@@ -517,7 +517,7 @@
       "Section": "Full",
       "Date": "2026-01-29 00:00:00",
       "Event Type": "Rehearsal",
-      "concert_id": NaN
+      "concert_id": null
     },
     {
       "_index": 20,
@@ -530,7 +530,7 @@
       "Section": "Full",
       "Date": "2026-01-29 00:00:00",
       "Event Type": "Rehearsal",
-      "concert_id": NaN
+      "concert_id": null
     },
     {
       "_index": 21,
@@ -543,7 +543,7 @@
       "Section": "Full",
       "Date": "2026-01-29 00:00:00",
       "Event Type": "Rehearsal",
-      "concert_id": NaN
+      "concert_id": null
     },
     {
       "_index": 22,
@@ -556,7 +556,7 @@
       "Section": "Full",
       "Date": "2026-01-29 00:00:00",
       "Event Type": "Rehearsal",
-      "concert_id": NaN
+      "concert_id": null
     },
     {
       "_index": 24,
@@ -569,7 +569,7 @@
       "Section": "Full",
       "Date": "2026-02-05 00:00:00",
       "Event Type": "Rehearsal",
-      "concert_id": NaN
+      "concert_id": null
     },
     {
       "_index": 25,
@@ -582,7 +582,7 @@
       "Section": "Full",
       "Date": "2026-02-05 00:00:00",
       "Event Type": "Rehearsal",
-      "concert_id": NaN
+      "concert_id": null
     },
     {
       "_index": 26,
@@ -595,7 +595,7 @@
       "Section": "Full",
       "Date": "2026-02-05 00:00:00",
       "Event Type": "Rehearsal",
-      "concert_id": NaN
+      "concert_id": null
     },
     {
       "_index": 27,
@@ -608,7 +608,7 @@
       "Section": "Full",
       "Date": "2026-02-05 00:00:00",
       "Event Type": "Rehearsal",
-      "concert_id": NaN
+      "concert_id": null
     },
     {
       "_index": 28,
@@ -621,7 +621,7 @@
       "Section": "Full",
       "Date": "2026-02-05 00:00:00",
       "Event Type": "Rehearsal",
-      "concert_id": NaN
+      "concert_id": null
     },
     {
       "_index": 29,
@@ -634,7 +634,7 @@
       "Section": "Full",
       "Date": "2026-02-05 00:00:00",
       "Event Type": "Rehearsal",
-      "concert_id": NaN
+      "concert_id": null
     },
     {
       "_index": 31,
@@ -647,7 +647,7 @@
       "Section": "Full",
       "Date": "2026-02-12 00:00:00",
       "Event Type": "Rehearsal",
-      "concert_id": NaN
+      "concert_id": null
     },
     {
       "_index": 32,
@@ -660,7 +660,7 @@
       "Section": "Full",
       "Date": "2026-02-12 00:00:00",
       "Event Type": "Rehearsal",
-      "concert_id": NaN
+      "concert_id": null
     },
     {
       "_index": 33,
@@ -673,7 +673,7 @@
       "Section": "Full",
       "Date": "2026-02-12 00:00:00",
       "Event Type": "Rehearsal",
-      "concert_id": NaN
+      "concert_id": null
     },
     {
       "_index": 34,
@@ -686,7 +686,7 @@
       "Section": "Full",
       "Date": "2026-02-12 00:00:00",
       "Event Type": "Rehearsal",
-      "concert_id": NaN
+      "concert_id": null
     },
     {
       "_index": 35,
@@ -699,7 +699,7 @@
       "Section": "Full",
       "Date": "2026-02-12 00:00:00",
       "Event Type": "Rehearsal",
-      "concert_id": NaN
+      "concert_id": null
     },
     {
       "_index": 36,
@@ -712,7 +712,7 @@
       "Section": "Full",
       "Date": "2026-02-12 00:00:00",
       "Event Type": "Rehearsal",
-      "concert_id": NaN
+      "concert_id": null
     },
     {
       "_index": 37,
@@ -725,7 +725,7 @@
       "Section": "Full",
       "Date": "2026-02-12 00:00:00",
       "Event Type": "Rehearsal",
-      "concert_id": NaN
+      "concert_id": null
     },
     {
       "_index": 38,
@@ -738,7 +738,7 @@
       "Section": "Full",
       "Date": "2026-02-12 00:00:00",
       "Event Type": "Rehearsal",
-      "concert_id": NaN
+      "concert_id": null
     },
     {
       "_index": 40,
@@ -751,7 +751,7 @@
       "Section": "Full",
       "Date": "2026-02-17 00:00:00",
       "Event Type": "Rehearsal",
-      "concert_id": NaN
+      "concert_id": null
     },
     {
       "_index": 41,
@@ -764,7 +764,7 @@
       "Section": "Full",
       "Date": "2026-02-17 00:00:00",
       "Event Type": "Rehearsal",
-      "concert_id": NaN
+      "concert_id": null
     },
     {
       "_index": 43,
@@ -777,7 +777,7 @@
       "Section": "Full",
       "Date": "2026-02-19 00:00:00",
       "Event Type": "Rehearsal",
-      "concert_id": NaN
+      "concert_id": null
     },
     {
       "_index": 44,
@@ -790,7 +790,7 @@
       "Section": "Full",
       "Date": "2026-02-19 00:00:00",
       "Event Type": "Rehearsal",
-      "concert_id": NaN
+      "concert_id": null
     },
     {
       "_index": 45,
@@ -803,7 +803,7 @@
       "Section": "Full",
       "Date": "2026-02-19 00:00:00",
       "Event Type": "Rehearsal",
-      "concert_id": NaN
+      "concert_id": null
     },
     {
       "_index": 46,
@@ -816,7 +816,7 @@
       "Section": "Full",
       "Date": "2026-02-19 00:00:00",
       "Event Type": "Rehearsal",
-      "concert_id": NaN
+      "concert_id": null
     },
     {
       "_index": 47,
@@ -829,7 +829,7 @@
       "Section": "Full",
       "Date": "2026-02-19 00:00:00",
       "Event Type": "Rehearsal",
-      "concert_id": NaN
+      "concert_id": null
     },
     {
       "_index": 48,
@@ -842,7 +842,7 @@
       "Section": "Full",
       "Date": "2026-02-19 00:00:00",
       "Event Type": "Rehearsal",
-      "concert_id": NaN
+      "concert_id": null
     },
     {
       "_index": 49,
@@ -855,7 +855,7 @@
       "Section": "Full",
       "Date": "2026-02-19 00:00:00",
       "Event Type": "Rehearsal",
-      "concert_id": NaN
+      "concert_id": null
     },
     {
       "_index": 50,
@@ -868,7 +868,7 @@
       "Section": "Full",
       "Date": "2026-02-19 00:00:00",
       "Event Type": "Rehearsal",
-      "concert_id": NaN
+      "concert_id": null
     },
     {
       "_index": 52,
@@ -881,7 +881,7 @@
       "Section": "Full",
       "Date": "2026-02-22 00:00:00",
       "Event Type": "Rehearsal",
-      "concert_id": NaN
+      "concert_id": null
     },
     {
       "_index": 54,
@@ -894,7 +894,7 @@
       "Section": "Full",
       "Date": "2026-02-24 00:00:00",
       "Event Type": "Rehearsal",
-      "concert_id": NaN
+      "concert_id": null
     },
     {
       "_index": 55,
@@ -907,7 +907,7 @@
       "Section": "Full",
       "Date": "2026-02-24 00:00:00",
       "Event Type": "Rehearsal",
-      "concert_id": NaN
+      "concert_id": null
     },
     {
       "_index": 57,
@@ -920,7 +920,7 @@
       "Section": "Full - With Paul Hollad",
       "Date": "2026-02-27",
       "Event Type": "Rehearsal",
-      "concert_id": NaN
+      "concert_id": null
     },
     {
       "_index": 59,
@@ -933,7 +933,7 @@
       "Section": "Full - With Paul Holland",
       "Date": "2026-02-28 00:00:00",
       "Event Type": "Rehearsal",
-      "concert_id": NaN
+      "concert_id": null
     },
     {
       "_index": 61,
@@ -946,7 +946,7 @@
       "Section": "Full",
       "Date": "2026-03-02 00:00:00",
       "Event Type": "Rehearsal",
-      "concert_id": NaN
+      "concert_id": null
     },
     {
       "_index": 62,
@@ -959,7 +959,7 @@
       "Section": "Full",
       "Date": "2026-03-02 00:00:00",
       "Event Type": "Rehearsal",
-      "concert_id": NaN
+      "concert_id": null
     },
     {
       "_index": 63,
@@ -972,7 +972,7 @@
       "Section": "Full",
       "Date": "2026-03-02 00:00:00",
       "Event Type": "Rehearsal",
-      "concert_id": NaN
+      "concert_id": null
     },
     {
       "_index": 64,
@@ -985,7 +985,7 @@
       "Section": "Full",
       "Date": "2026-03-02 00:00:00",
       "Event Type": "Rehearsal",
-      "concert_id": NaN
+      "concert_id": null
     },
     {
       "_index": 65,
@@ -998,7 +998,7 @@
       "Section": "Full",
       "Date": "2026-03-02 00:00:00",
       "Event Type": "Rehearsal",
-      "concert_id": NaN
+      "concert_id": null
     },
     {
       "_index": 66,
@@ -1011,7 +1011,7 @@
       "Section": "Full",
       "Date": "2026-03-02 00:00:00",
       "Event Type": "Rehearsal",
-      "concert_id": NaN
+      "concert_id": null
     },
     {
       "_index": 67,
@@ -1024,7 +1024,7 @@
       "Section": "Full",
       "Date": "2026-03-02 00:00:00",
       "Event Type": "Rehearsal",
-      "concert_id": NaN
+      "concert_id": null
     },
     {
       "_index": 68,
@@ -1037,7 +1037,7 @@
       "Section": "Full",
       "Date": "2026-03-02 00:00:00",
       "Event Type": "Rehearsal",
-      "concert_id": NaN
+      "concert_id": null
     },
     {
       "_index": 69,
@@ -1050,7 +1050,7 @@
       "Section": "Full",
       "Date": "2026-03-02 00:00:00",
       "Event Type": "Rehearsal",
-      "concert_id": NaN
+      "concert_id": null
     },
     {
       "_index": 70,
@@ -1063,7 +1063,7 @@
       "Section": "Full",
       "Date": "2026-03-02 00:00:00",
       "Event Type": "Rehearsal",
-      "concert_id": NaN
+      "concert_id": null
     },
     {
       "_index": 72,
@@ -1076,7 +1076,7 @@
       "Section": "Full",
       "Date": "2026-03-06 00:00:00",
       "Event Type": "Rehearsal",
-      "concert_id": NaN
+      "concert_id": null
     },
     {
       "_index": 73,
@@ -1089,7 +1089,7 @@
       "Section": "Full",
       "Date": "2026-03-07 00:00:00",
       "Event Type": "Rehearsal",
-      "concert_id": NaN
+      "concert_id": null
     },
     {
       "_index": 60,
@@ -1102,7 +1102,7 @@
       "Section": "Sectionals",
       "Date": "2026-02-21",
       "Event Type": "Sectional",
-      "concert_id": NaN
+      "concert_id": null
     },
     {
       "_index": 61,
@@ -1421,5 +1421,77 @@
         "responded_at": 1769703588
       }
     }
-  }
+  },
+  "conducting_logs": [
+    {
+      "rehearsal_num": 5,
+      "started_at": "2026-02-05T17:51:33.863Z",
+      "ended_at": "2026-02-05T17:52:07.463Z",
+      "items": [
+        {
+          "title": "The President",
+          "scheduled_start": "20:00:00",
+          "scheduled_duration": 10,
+          "scheduled_duration_seconds": 600,
+          "actual_start": "2026-02-05T17:51:33.863Z",
+          "actual_duration": 0,
+          "actual_duration_seconds": 12,
+          "status": "completed"
+        },
+        {
+          "title": "Aladdin",
+          "scheduled_start": "20:10:00",
+          "scheduled_duration": 30,
+          "scheduled_duration_seconds": 1800,
+          "actual_start": "2026-02-05T17:51:45.699Z",
+          "actual_duration": 0,
+          "actual_duration_seconds": 3,
+          "status": "completed"
+        },
+        {
+          "title": "Interstellar",
+          "scheduled_start": "20:40:00",
+          "scheduled_duration": 30,
+          "scheduled_duration_seconds": 1800,
+          "actual_start": "2026-02-05T17:51:49.039Z",
+          "actual_duration": 0,
+          "actual_duration_seconds": 3,
+          "status": "completed"
+        },
+        {
+          "title": "Hyperdrive",
+          "scheduled_start": "21:10:00",
+          "scheduled_duration": 20,
+          "scheduled_duration_seconds": 1200,
+          "actual_start": "2026-02-05T17:51:51.867Z",
+          "actual_duration": 0,
+          "actual_duration_seconds": 11,
+          "status": "completed"
+        },
+        {
+          "title": "Labour and Love",
+          "scheduled_start": "21:30:00",
+          "scheduled_duration": 20,
+          "scheduled_duration_seconds": 1200,
+          "actual_start": "2026-02-05T17:52:02.607Z",
+          "actual_duration": 0,
+          "actual_duration_seconds": 3,
+          "status": "completed"
+        },
+        {
+          "title": "Force of Destiny",
+          "scheduled_start": "21:50:00",
+          "scheduled_duration": 10,
+          "scheduled_duration_seconds": 600,
+          "actual_start": "2026-02-05T17:52:05.111Z",
+          "actual_duration": 0,
+          "actual_duration_seconds": 2,
+          "status": "completed"
+        }
+      ],
+      "adjustments": [],
+      "conducted_by": "872bf6d3b5bd45a1824cfb04c105c1ad",
+      "saved_at": 1770313927
+    }
+  ]
 }

@@ -7,7 +7,8 @@ let STATE = {
   allocation_original: [],  // Store original allocation for comparison (captured only once on first load)
   schedule: [],
   timed: [],
-  _allocation_original_captured: false  // Flag to ensure original allocation is only captured once
+  _allocation_original_captured: false,  // Flag to ensure original allocation is only captured once
+  conducting_insights: null  // Cache for conducting insights
 };
 
 // --- UTILS ---
@@ -51,6 +52,27 @@ async function apiPost(path, bodyObj) {
   });
   if (!res.ok) throw new Error(await res.text());
   return res.json();
+}
+
+// Helper to load and cache conducting insights
+async function loadConductingInsights() {
+  if (STATE.conducting_insights) {
+    return STATE.conducting_insights;
+  }
+  
+  const data = await apiGet('/conducting_insights');
+  if (data.ok) {
+    STATE.conducting_insights = data.insights;
+    return data.insights;
+  }
+  return [];
+}
+
+// Format seconds as M:SS
+function formatSecondsShort(seconds) {
+  const mins = Math.floor(Math.abs(seconds) / 60);
+  const secs = Math.abs(seconds) % 60;
+  return `${mins}:${String(Math.round(secs)).padStart(2, '0')}`;
 }
 
 // --- ACCORDION TOGGLE ---
@@ -3120,7 +3142,7 @@ function openWorkDetailsModal(item, rehearsalNum) {
     background: white;
     border-radius: 8px;
     padding: 24px;
-    max-width: 500px;
+    max-width: 600px;
     width: 90%;
     max-height: 80vh;
     overflow-y: auto;
@@ -3157,24 +3179,32 @@ function openWorkDetailsModal(item, rehearsalNum) {
         <h4 style="margin: 0 0 12px 0; font-size: 14px; font-weight: 600; color: #374151;">Orchestration</h4>
         <div style="font-size: 13px; color: #4b5563; white-space: pre-wrap;">${escapeHtml(orchestration)}</div>
       </div>
-      
-      <div style="margin-bottom: 20px; padding: 16px; background: #f0f9ff; border-radius: 6px; border-left: 4px solid ${diffColor};">
-        <h4 style="margin: 0 0 12px 0; font-size: 14px; font-weight: 600; color: #374151;">Time Allocation</h4>
-        <div style="font-size: 13px; color: #4b5563; margin-bottom: 6px;">
-          <strong>Required:</strong> ${requiredTime} minutes
-        </div>
-        <div style="font-size: 13px; color: #4b5563; margin-bottom: 6px;">
-          <strong>Allocated (Total across all rehearsals):</strong> ${totalAllocated} minutes
-        </div>
-        <div style="font-size: 13px; color: #9ca3af; margin-bottom: 6px; font-style: italic;">
-          Current rehearsal: ${currentAllocation} minutes
-        </div>
-        <div style="font-size: 14px; font-weight: 600; color: ${diffColor};">
-          <strong>Difference:</strong> ${diffSign}${timeDiff} minutes
-        </div>
-      </div>
     `;
   }
+  
+  modalHTML += `
+    <div style="margin-bottom: 20px; padding: 16px; background: #f0f9ff; border-radius: 6px; border-left: 4px solid ${diffColor};">
+      <h4 style="margin: 0 0 12px 0; font-size: 14px; font-weight: 600; color: #374151;">Time Allocation</h4>
+      <div style="font-size: 13px; color: #4b5563; margin-bottom: 6px;">
+        <strong>Required:</strong> ${requiredTime} minutes
+      </div>
+      <div style="font-size: 13px; color: #4b5563; margin-bottom: 6px;">
+        <strong>Allocated (Total across all rehearsals):</strong> ${totalAllocated} minutes
+      </div>
+      <div style="font-size: 13px; color: #9ca3af; margin-bottom: 6px; font-style: italic;">
+        Current rehearsal: ${currentAllocation} minutes
+      </div>
+      <div style="font-size: 14px; font-weight: 600; color: ${diffColor};">
+        <strong>Difference:</strong> ${diffSign}${timeDiff} minutes
+      </div>
+    </div>
+    
+    <div id="conductingInsightsContainer" style="margin-bottom: 20px;">
+      <div style="padding: 16px; background: #fef3c7; border-radius: 6px; text-align: center; color: #92400e;">
+        <i>Loading conducting insights...</i>
+      </div>
+    </div>
+  `;
   
   // Add action buttons
   modalHTML += `
@@ -3191,6 +3221,64 @@ function openWorkDetailsModal(item, rehearsalNum) {
   modal.innerHTML = modalHTML;
   overlay.appendChild(modal);
   document.body.appendChild(overlay);
+  
+  // Load conducting insights asynchronously
+  loadConductingInsights().then(insights => {
+    const workInsight = insights.find(i => i.title === item.title);
+    const container = document.getElementById('conductingInsightsContainer');
+    
+    if (workInsight && workInsight.total_times > 0) {
+      const avgActualMins = Math.round(workInsight.avg_actual_seconds / 60);
+      const avgActualSecs = workInsight.avg_actual_seconds % 60;
+      const avgScheduledMins = Math.round(workInsight.avg_scheduled_seconds / 60);
+      const avgVarianceSecs = workInsight.avg_variance_seconds;
+      const avgVariancePct = workInsight.avg_variance_pct;
+      const varianceColor = avgVarianceSecs > 0 ? '#ef4444' : avgVarianceSecs < 0 ? '#10b981' : '#6b7280';
+      const varianceSign = avgVarianceSecs > 0 ? '+' : '';
+      
+      container.innerHTML = `
+        <div style="padding: 16px; background: #f0fdf4; border-radius: 6px; border-left: 4px solid ${varianceColor};">
+          <h4 style="margin: 0 0 12px 0; font-size: 14px; font-weight: 600; color: #374151;">
+            Conducting History (${workInsight.total_times} time${workInsight.total_times > 1 ? 's' : ''})
+          </h4>
+          <div style="font-size: 13px; color: #4b5563; margin-bottom: 6px;">
+            <strong>Avg Actual Time:</strong> ${avgActualMins}:${String(Math.round(avgActualSecs)).padStart(2, '0')} 
+            (scheduled: ${avgScheduledMins} min)
+          </div>
+          <div style="font-size: 14px; font-weight: 600; color: ${varianceColor};">
+            <strong>Avg Variance:</strong> ${varianceSign}${formatSecondsShort(Math.abs(avgVarianceSecs))} (${varianceSign}${avgVariancePct.toFixed(1)}%)
+          </div>
+          <div style="margin-top: 12px; padding-top: 12px; border-top: 1px solid #d1fae5;">
+            <div style="font-size: 12px; color: #6b7280; font-style: italic;">
+              Recent rehearsals:
+            </div>
+            ${workInsight.rehearsals.slice(-3).reverse().map(r => `
+              <div style="font-size: 12px; color: #4b5563; margin-top: 4px;">
+                R${r.rehearsal_num}: ${formatSecondsShort(r.actual_seconds)} 
+                (${r.variance_seconds >= 0 ? '+' : ''}${formatSecondsShort(r.variance_seconds)})
+              </div>
+            `).join('')}
+          </div>
+        </div>
+      `;
+    } else {
+      container.innerHTML = `
+        <div style="padding: 16px; background: #f3f4f6; border-radius: 6px; text-align: center; color: #6b7280; font-size: 13px;">
+          No conducting history yet for this work.
+        </div>
+      `;
+    }
+  }).catch(err => {
+    console.error('Failed to load conducting insights:', err);
+    const container = document.getElementById('conductingInsightsContainer');
+    if (container) {
+      container.innerHTML = `
+        <div style="padding: 16px; background: #fef2f2; border-radius: 6px; text-align: center; color: #991b1b; font-size: 13px;">
+          Failed to load conducting history.
+        </div>
+      `;
+    }
+  });
   
   // Add delete handler
   document.getElementById('deleteWorkBtn').addEventListener('click', () => {
