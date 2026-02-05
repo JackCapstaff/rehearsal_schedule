@@ -37,13 +37,17 @@
       <div class="col-6">
         <strong>Total Duration:</strong> 
         {% if log.started_at and log.ended_at %}
-          {# Calculate duration from ISO timestamps #}
-          {% set start_dt = log.started_at %}
-          {% set end_dt = log.ended_at %}
-          {# Note: Jinja can't parse ISO timestamps easily, so we'll calculate on the backend or show work-based total #}
-          {% set total_actual = log['items']|sum(attribute='actual_duration', start=0) %}
-          {% if total_actual > 0 %}
-            {{ total_actual|round(1) }} minutes
+          {# Calculate total from actual_duration_seconds, falling back to actual_duration in minutes #}
+          {% set total_seconds = 0 %}
+          {% for item in log['items'] %}
+            {% if item.actual_duration_seconds %}
+              {% set total_seconds = total_seconds + item.actual_duration_seconds %}
+            {% elif item.actual_duration %}
+              {% set total_seconds = total_seconds + (item.actual_duration * 60) %}
+            {% endif %}
+          {% endfor %}
+          {% if total_seconds > 0 %}
+            {{ total_seconds|format_duration }}
           {% else %}
             See individual items
           {% endif %}
