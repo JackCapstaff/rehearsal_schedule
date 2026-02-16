@@ -2923,8 +2923,8 @@ function attachItemEventHandlers(itemEl, item, rehearsalNum, content, resizeTop,
       // Open event edit modal for sectionals
       openRehearsalEditModal(rehearsalNum);
     } else {
-      // Open work details modal for regular rehearsal works
-      openWorkDetailsModal(item, rehearsalNum);
+      // Inline edit title for regular rehearsal works
+      inlineEditItemTitle(itemEl, item, rehearsalNum);
     }
   });
 
@@ -3291,6 +3291,221 @@ function openWorkDetailsModal(item, rehearsalNum) {
   // Close on overlay click
   overlay.addEventListener('click', (e) => {
     if (e.target === overlay) overlay.remove();
+  });
+}
+
+  // ========================
+  // Find & Replace functions
+  // ========================
+
+  function _matchText(hay, needle, ignoreCase) {
+    if (!hay || !needle) return false;
+    if (ignoreCase) return String(hay).toLowerCase().includes(String(needle).toLowerCase());
+    return String(hay).includes(String(needle));
+  }
+
+  function findReplacePreview() {
+    const find = document.getElementById('fr-find').value || '';
+    const replace = document.getElementById('fr-replace').value || '';
+    const ignoreCase = !!document.getElementById('fr-ignore-case').checked;
+    const scopeWorks = !!document.getElementById('fr-scope-works').checked;
+    const scopeTimed = !!document.getElementById('fr-scope-timed').checked;
+    const scopeConcerts = !!document.getElementById('fr-scope-concerts').checked;
+
+    if (!find) {
+      alert('Please enter text to find');
+      return;
+    }
+
+    const results = { works: 0, timed: 0, concerts: 0, details: [] };
+
+    if (scopeWorks && Array.isArray(STATE.works)) {
+      STATE.works.forEach(w => {
+        const title = w.Title || w.title || '';
+        if (_matchText(title, find, ignoreCase)) {
+          results.works += 1;
+          results.details.push({type: 'work', id: w.Work || w.id || null, title});
+        }
+      });
+    }
+
+    if (scopeTimed && Array.isArray(STATE.timed)) {
+      STATE.timed.forEach(t => {
+        const title = t.Title || '';
+        if (_matchText(title, find, ignoreCase)) {
+          results.timed += 1;
+          results.details.push({type: 'timed', index: t._index, title, rehearsal: t.Rehearsal});
+        }
+      });
+    }
+
+    if (scopeConcerts && Array.isArray(STATE.concerts)) {
+      STATE.concerts.forEach(c => {
+        const title = c.title || '';
+        if (_matchText(title, find, ignoreCase)) {
+          results.concerts += 1;
+          results.details.push({type: 'concert', id: c.id, title});
+        }
+      });
+    }
+
+    const preview = document.getElementById('fr-preview');
+    if (!preview) return;
+    preview.innerHTML = `Preview: Works: <strong>${results.works}</strong>, Timeline: <strong>${results.timed}</strong>, Concerts: <strong>${results.concerts}</strong>`;
+    if (results.details.length > 0) {
+      preview.innerHTML += '<div style="margin-top:8px; max-height:160px; overflow:auto; border:1px solid #eee; padding:8px; border-radius:4px; background:#fafafa;">' +
+        results.details.slice(0,200).map(d => {
+          if (d.type === 'work') return `<div>Work: ${escapeHtml(d.title)}</div>`;
+          if (d.type === 'timed') return `<div>Timed (R${d.rehearsal}): ${escapeHtml(d.title)}</div>`;
+          return `<div>Concert: ${escapeHtml(d.title)}</div>`;
+        }).join('') + '</div>';
+    }
+  }
+
+  function applyFindReplaceAll(dryRun) {
+    const find = document.getElementById('fr-find').value || '';
+    const replace = document.getElementById('fr-replace').value || '';
+    const ignoreCase = !!document.getElementById('fr-ignore-case').checked;
+    const scopeWorks = !!document.getElementById('fr-scope-works').checked;
+    const scopeTimed = !!document.getElementById('fr-scope-timed').checked;
+    const scopeConcerts = !!document.getElementById('fr-scope-concerts').checked;
+
+    if (!find) {
+      alert('Please enter text to find');
+      return;
+    }
+
+    const re = ignoreCase ? new RegExp(find.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'ig') : new RegExp(find.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g');
+
+    let workChanges = 0;
+    let timedChanges = 0;
+    let concertChanges = 0;
+
+    if (scopeWorks && Array.isArray(STATE.works)) {
+      STATE.works.forEach(w => {
+        const key = w.Title ? 'Title' : (w.title ? 'title' : null);
+        if (!key) return;
+        if (String(w[key]).match(re)) {
+          workChanges += 1;
+          if (!dryRun) {
+            w[key] = String(w[key]).replace(re, replace);
+          }
+        }
+      });
+    }
+
+    if (scopeTimed && Array.isArray(STATE.timed)) {
+      STATE.timed.forEach(t => {
+        if (String(t.Title).match(re)) {
+          timedChanges += 1;
+          if (!dryRun) {
+            t.Title = String(t.Title).replace(re, replace);
+          }
+        }
+      });
+    }
+
+    if (scopeConcerts && Array.isArray(STATE.concerts)) {
+      STATE.concerts.forEach(c => {
+        if (String(c.title).match(re)) {
+          concertChanges += 1;
+          if (!dryRun) {
+            c.title = String(c.title).replace(re, replace);
+          }
+        }
+      });
+    }
+
+    const preview = document.getElementById('fr-preview');
+    preview.innerHTML = `Replacements: Works: <strong>${workChanges}</strong>, Timeline: <strong>${timedChanges}</strong>, Concerts: <strong>${concertChanges}</strong>`;
+
+    if (!dryRun) {
+      // Persist changes: save works and timed
+      if (workChanges > 0) {
+        saveInputs();
+        renderTable('works-table', STATE.works, STATE.works_cols, saveInputs);
+      }
+      if (timedChanges > 0) {
+        // ensure indices exist
+        STATE.timed = STATE.timed.map((t, idx) => ({ ...t, _index: t._index === undefined ? idx : t._index }));
+        saveTimelineToBackend();
+        renderTimelineEditor();
+        renderTimedAccordion('timed-table', STATE.timed);
+      }
+      if (concertChanges > 0) {
+        // Save concerts via backend if API exists
+        try {
+          apiPost('/update_concerts_bulk', { concerts: STATE.concerts }).catch(() => {});
+        } catch (e) {}
+      }
+    }
+  }
+
+/**
+ * Inline edit the title of a timeline item.
+ * Updates STATE.timed entry and saves.
+ */
+function inlineEditItemTitle(itemEl, item, rehearsalNum) {
+  // Prevent multiple editors
+  if (itemEl.querySelector('.inline-title-input')) return;
+
+  const originalTitle = item.title || '';
+
+  // Create input overlay
+  const input = document.createElement('input');
+  input.type = 'text';
+  input.value = originalTitle;
+  input.className = 'inline-title-input';
+  input.style.cssText = `position:absolute; left:8px; right:8px; top:8px; z-index:3000; padding:6px 8px; border-radius:4px; border:1px solid rgba(0,0,0,0.2); font-weight:600;`;
+
+  // Append to the item content area
+  itemEl.appendChild(input);
+  input.focus();
+  input.select();
+
+  function commitChange() {
+    const newTitle = input.value.trim();
+    input.remove();
+    if (newTitle === originalTitle) return;
+
+    // Update STATE.timed entries matching this _index
+    const beforeState = deepCopy(STATE.timed);
+    let updatedCount = 0;
+    STATE.timed.forEach(t => {
+      if (t._index === item.originalIndex) {
+        t.Title = newTitle;
+        updatedCount++;
+      }
+    });
+
+    // Mark edited indices/pairs
+    DIRECTLY_EDITED_INDICES.add(item.originalIndex);
+    DIRECTLY_EDITED_PAIRS.add(`${newTitle}|${rehearsalNum}`);
+
+    if (updatedCount > 0) {
+      const afterState = deepCopy(STATE.timed);
+      pushToHistory('edit-title', beforeState, afterState);
+      // Save timeline and re-render
+      saveTimelineToBackend();
+      renderTimelineEditor();
+    }
+  }
+
+  function cancelEdit() {
+    input.remove();
+  }
+
+  input.addEventListener('keydown', (ev) => {
+    if (ev.key === 'Enter') {
+      commitChange();
+    } else if (ev.key === 'Escape') {
+      cancelEdit();
+    }
+  });
+
+  input.addEventListener('blur', () => {
+    // Commit on blur
+    commitChange();
   });
 }
 

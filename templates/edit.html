@@ -157,6 +157,30 @@
   </div>
 
   <!-- ===================== -->
+  <!-- Find & Replace All UI -->
+  <!-- ===================== -->
+  <div class="card">
+    <h3>Find & Replace All</h3>
+    <div class="small" style="margin-bottom:8px;">Find and replace across Works, Timeline (Titles), and Concerts. Use Preview first.</div>
+    <div style="display:flex; gap:8px; align-items:center; margin-bottom:8px;">
+      <input id="fr-find" type="text" placeholder="Find text" style="flex:1; padding:8px; border:1px solid #d1d5db; border-radius:4px;">
+      <input id="fr-replace" type="text" placeholder="Replace with" style="flex:1; padding:8px; border:1px solid #d1d5db; border-radius:4px;">
+    </div>
+    <div style="display:flex; gap:8px; align-items:center; margin-bottom:8px;">
+      <label style="display:inline-flex; align-items:center; gap:6px;"><input id="fr-ignore-case" type="checkbox"> Ignore case</label>
+      <label style="display:inline-flex; align-items:center; gap:6px;"><input id="fr-scope-works" type="checkbox" checked> Works</label>
+      <label style="display:inline-flex; align-items:center; gap:6px;"><input id="fr-scope-timed" type="checkbox" checked> Timeline</label>
+      <label style="display:inline-flex; align-items:center; gap:6px;"><input id="fr-scope-concerts" type="checkbox" checked> Concerts</label>
+    </div>
+    <div style="display:flex; gap:8px;">
+      <button class="btn" type="button" onclick="findReplacePreview()">Preview</button>
+      <button class="btn" type="button" onclick="applyFindReplaceAll(false)">Replace All</button>
+      <button class="btn secondary" type="button" onclick="applyFindReplaceAll(true)">Replace All (dry-run)</button>
+    </div>
+    <div id="fr-preview" style="margin-top:12px; font-size:0.95rem; color:#374151;"></div>
+  </div>
+
+  <!-- ===================== -->
   <!-- Allocation + schedule controls -->
   <!-- ===================== -->
   <div class="card">

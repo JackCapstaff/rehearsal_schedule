@@ -979,6 +979,94 @@ def save_invitations(invitations: List[dict]):
     write_json_atomic(invitations_path(), invitations)
 
 
+# ----------------------------
+# Admin management endpoints (wrap tools/manage_schedule.py)
+# ----------------------------
+def _require_edit_token_or_abort():
+    token = request.args.get("token") or request.form.get("token") or request.headers.get("X-Edit-Token")
+    if not token or token != EDIT_TOKEN:
+        abort(403)
+
+
+def _run_manage_script(args: list[str]) -> dict:
+    script_path = os.path.join(os.path.dirname(__file__), "tools", "manage_schedule.py")
+    cmd = [sys.executable, script_path] + args
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True)
+        return {"returncode": proc.returncode, "stdout": proc.stdout, "stderr": proc.stderr}
+    except Exception as e:
+        return {"returncode": 254, "stdout": "", "stderr": str(e)}
+
+
+@app.route("/admin/api/manage/rename-field", methods=["POST"])  # token required
+def api_manage_rename_field():
+    _require_edit_token_or_abort()
+    data = request.get_json() or request.form
+    old = data.get("old")
+    new = data.get("new")
+    target = data.get("target", "all")
+    dry = data.get("dry_run") or data.get("dry-run") or False
+    backup = data.get("backup") or False
+    if not old or not new:
+        return jsonify({"error": "missing old/new"}), 400
+    args = ["rename-field", "--old", str(old), "--new", str(new), "--target", str(target)]
+    if dry:
+        args.append("--dry-run")
+    if backup:
+        args.append("--backup")
+    res = _run_manage_script(args)
+    return jsonify(res)
+
+
+@app.route("/admin/api/manage/replace-work-id", methods=["POST"])  # token required
+def api_manage_replace_work_id():
+    _require_edit_token_or_abort()
+    data = request.get_json() or request.form
+    try:
+        old_id = int(data.get("old_id") or data.get("old-id"))
+        new_id = int(data.get("new_id") or data.get("new-id"))
+    except Exception:
+        return jsonify({"error": "old_id and new_id must be integers"}), 400
+    merge = bool(data.get("merge"))
+    force = bool(data.get("force"))
+    dry = bool(data.get("dry_run") or data.get("dry-run"))
+    backup = bool(data.get("backup"))
+    args = ["replace-work-id", "--old-id", str(old_id), "--new-id", str(new_id)]
+    if merge:
+        args.append("--merge")
+    if force:
+        args.append("--force")
+    if dry:
+        args.append("--dry-run")
+    if backup:
+        args.append("--backup")
+    res = _run_manage_script(args)
+    return jsonify(res)
+
+
+@app.route("/admin/api/manage/replace-work-title", methods=["POST"])  # token required
+def api_manage_replace_work_title():
+    _require_edit_token_or_abort()
+    data = request.get_json() or request.form
+    find = data.get("find")
+    replace = data.get("replace")
+    if not find or replace is None:
+        return jsonify({"error": "missing find or replace"}), 400
+    ignore_case = bool(data.get("ignore_case") or data.get("ignore-case"))
+    dry = bool(data.get("dry_run") or data.get("dry-run"))
+    backup = bool(data.get("backup"))
+    args = ["replace-work-title", "--find", str(find), "--replace", str(replace)]
+    if ignore_case:
+        args.append("--ignore-case")
+    if dry:
+        args.append("--dry-run")
+    if backup:
+        args.append("--backup")
+    res = _run_manage_script(args)
+    return jsonify(res)
+
+
+
 def build_invitation_link(invite_code: str) -> str:
     """Return an absolute invitation URL for the register page."""
     if not invite_code:
