@@ -41,6 +41,7 @@
         {% endif %}
 
         <a class="btn secondary" href="{{ url_for('schedule_view', schedule_id=schedule_id) }}">View</a>
+        <a class="btn secondary" href="{{ url_for('admin_schedule_attendance', schedule_id=schedule_id) }}">Attendance</a>
         
         <button class="btn secondary" onclick="document.getElementById('upload-complete-schedule').click();">
           📤 Upload Complete Schedule
@@ -264,6 +265,8 @@
 
   // Let editor.js initialise tables
   initEditor(window.INITIAL_DATA);
+  // Ensure we refresh from server on load so preview allocation runs
+  refreshFromServer().catch(err => console.error('refreshFromServer failed on page load', err));
 
   let lastDefaultSubject = "";
   let lastDefaultBody = "";

@@ -1184,6 +1184,26 @@ async function refreshFromServer() {
   sortAndRenumberRehearsals();
   
   STATE.allocation = data.allocation || [];
+  // Run a preview allocation once per schedule session (client-side) so required minutes
+  // are available when opening the editor. We track this with localStorage to avoid
+  // re-running on every refresh/navigation.
+  (async () => {
+    try {
+      const sid = scheduleId();
+      const previewKey = `allocation_preview_done_${sid}`;
+      const already = localStorage.getItem(previewKey);
+      if (!already) {
+        const preview = await apiPost('/run_allocation_preview', {});
+        if (preview && preview.ok && preview.allocation && preview.allocation.length > 0) {
+          console.log('[REFRESH] Applied preview allocation (client-side only). Rows:', preview.allocation.length);
+          STATE.allocation = preview.allocation;
+          localStorage.setItem(previewKey, String(Date.now()));
+        }
+      }
+    } catch (e) {
+      console.warn('[REFRESH] Allocation preview failed (silent):', e);
+    }
+  })();
   STATE.schedule = data.schedule || [];
   STATE.timed = (data.timed || []).map((row, idx) => ({ ...row, _index: idx }));
   STATE.concerts = data.concerts || [];  // Store concerts for timeline editor
@@ -1377,7 +1397,25 @@ async function uploadXlsx() {
   });
   const out = await res.json();
   msg.textContent = out.ok ? "Import Success" : (out.error || "Failed");
+  // Refresh server state first
   await refreshFromServer();
+
+  // After a successful import, automatically run allocation and generate schedule
+  // so the timeline editor is populated for immediate editing.
+  if (out.ok) {
+    try {
+      msg.textContent = 'Running allocation and generating schedule...';
+      // runAllocation and generateSchedule are safe flows that persist to server
+      await runAllocation();
+      await generateSchedule();
+      msg.textContent = 'Import, allocation and schedule generation complete.';
+      // Final refresh to ensure client state is fully up-to-date
+      await refreshFromServer();
+    } catch (e) {
+      console.error('Auto allocation/generation failed after import:', e);
+      msg.textContent = 'Import succeeded; allocation/generation failed: ' + (e.message || e);
+    }
+  }
 }
 
 function initEditor(initial) {
@@ -2923,8 +2961,8 @@ function attachItemEventHandlers(itemEl, item, rehearsalNum, content, resizeTop,
       // Open event edit modal for sectionals
       openRehearsalEditModal(rehearsalNum);
     } else {
-      // Inline edit title for regular rehearsal works
-      inlineEditItemTitle(itemEl, item, rehearsalNum);
+      // Show work details (total allocated vs required) instead of inline renaming
+      openWorkDetailsModal(item, rehearsalNum);
     }
   });
 
@@ -3077,31 +3115,57 @@ function attachItemEventHandlers(itemEl, item, rehearsalNum, content, resizeTop,
 // Work Details Modal
 // ========================
 
-function openWorkDetailsModal(item, rehearsalNum) {
+async function openWorkDetailsModal(item, rehearsalNum) {
   // Find the original work in STATE.works to get orchestration info
   const workInfo = STATE.works.find(w => w.Title === item.title);
   
-  // Get required time from allocation table (sum all rehearsal columns)
+  // Compute required time using allocation if available; otherwise attempt to run allocation server-side
   let requiredTime = 0;
-  if (STATE.allocation && STATE.allocation.length > 0) {
-    const allocRow = STATE.allocation.find(a => {
-      const title = a.Title || a.Work || a.title;
-      return title === item.title;
+  const computeRequiredFromAllocation = (allocArray, title) => {
+    let req = 0;
+    if (!allocArray) return 0;
+    const normTitle = String(title || '').trim().toLowerCase();
+    const allocRow = allocArray.find(a => {
+      const t = a.Title || a.Work || a.title || "";
+      return String(t || '').trim().toLowerCase() === normTitle;
     });
     if (allocRow) {
-      // Sum all "Rehearsal X" columns to get total required time
       Object.keys(allocRow).forEach(key => {
-        if (key.startsWith('Rehearsal ')) {
-          const val = parseInt(allocRow[key]);
-          if (!isNaN(val)) {
-            requiredTime += val;
-          }
+        if (String(key).startsWith('Rehearsal ')) {
+          const v = parseInt(allocRow[key]);
+          if (!isNaN(v)) req += v;
         }
       });
     }
+    return req;
+  };
+
+  // Try using cached allocation first
+  requiredTime = computeRequiredFromAllocation(STATE.allocation, item.title);
+
+  // If required time is zero, show a compute allocation action instead of auto-running
+  let showComputeAlloc = false;
+  if (requiredTime === 0) {
+    showComputeAlloc = true;
   }
-  
-  // Fallback to works table if not in allocation
+
+  // If we have no allocation on the client, attempt a preview allocation (doesn't overwrite server timed)
+  if (showComputeAlloc && (!STATE.allocation || STATE.allocation.length === 0)) {
+    try {
+      const preview = await apiPost('/run_allocation_preview', {});
+      if (preview && preview.ok && preview.allocation) {
+        STATE.allocation = preview.allocation;
+        // Recompute required time from the newly obtained allocation
+        requiredTime = computeRequiredFromAllocation(STATE.allocation, item.title) || requiredTime;
+        if (requiredTime > 0) showComputeAlloc = false;
+      }
+    } catch (e) {
+      // Ignore preview errors here; user can click Compute allocation manually
+      console.warn('Allocation preview failed (non-fatal):', e);
+    }
+  }
+
+  // Fallback to works table if still not found
   if (requiredTime === 0 && workInfo) {
     requiredTime = parseInt(workInfo['Rehearsal Time Required']) || 0;
   }
@@ -3149,10 +3213,13 @@ function openWorkDetailsModal(item, rehearsalNum) {
     box-shadow: 0 20px 25px -5px rgba(0,0,0,0.1), 0 10px 10px -5px rgba(0,0,0,0.04);
   `;
   
-  // Build modal HTML
+  // Build modal HTML with editable title and swap control
   let modalHTML = `
     <div style="display: flex; justify-content: space-between; align-items: start; margin-bottom: 20px;">
-      <h3 style="margin: 0; font-size: 18px; font-weight: 600; color: #111827;">${escapeHtml(item.title)}</h3>
+      <div style="flex:1;">
+        <label style="display:block; font-size:12px; color:#6b7280; margin-bottom:6px;">Title (editable)</label>
+        <input id="workTitleInput" value="${escapeHtml(item.title)}" style="width:100%; padding:8px; border:1px solid #e5e7eb; border-radius:6px; font-weight:600; font-size:16px;" />
+      </div>
       <button onclick="this.closest('[style*=\\'position: fixed\\']').remove()" style="background: none; border: none; font-size: 24px; color: #6b7280; cursor: pointer; padding: 0; line-height: 1;">&times;</button>
     </div>
     
@@ -3186,7 +3253,8 @@ function openWorkDetailsModal(item, rehearsalNum) {
     <div style="margin-bottom: 20px; padding: 16px; background: #f0f9ff; border-radius: 6px; border-left: 4px solid ${diffColor};">
       <h4 style="margin: 0 0 12px 0; font-size: 14px; font-weight: 600; color: #374151;">Time Allocation</h4>
       <div style="font-size: 13px; color: #4b5563; margin-bottom: 6px;">
-        <strong>Required:</strong> ${requiredTime} minutes
+        <strong>Required:</strong> <span id="requiredMinutes">${requiredTime}</span> minutes
+        ${showComputeAlloc ? '<button id="computeAllocBtn" style="margin-left:12px; padding:6px 10px; font-size:12px; border-radius:6px; border:1px solid #d1d5db; background:#fff; cursor:pointer;">Compute allocation</button>' : ''}
       </div>
       <div style="font-size: 13px; color: #4b5563; margin-bottom: 6px;">
         <strong>Allocated (Total across all rehearsals):</strong> ${totalAllocated} minutes
@@ -3208,13 +3276,20 @@ function openWorkDetailsModal(item, rehearsalNum) {
   
   // Add action buttons
   modalHTML += `
-    <div style="display: flex; gap: 12px; margin-top: 24px;">
-      <button id="deleteWorkBtn" style="flex: 1; padding: 10px; background: #ef4444; color: white; border: none; border-radius: 6px; font-size: 14px; font-weight: 500; cursor: pointer;">
-        Delete from Rehearsal
-      </button>
-      <button onclick="this.closest('[style*=\\'position: fixed\\']').remove()" style="flex: 1; padding: 10px; background: #6b7280; color: white; border: none; border-radius: 6px; font-size: 14px; font-weight: 500; cursor: pointer;">
-        Close
-      </button>
+    <div style="margin-top:12px; display:flex; gap:8px; align-items:center;">
+      <div style="flex:1;">
+        <label style="display:block; font-size:12px; color:#6b7280; margin-bottom:6px;">Or swap to another work:</label>
+        <select id="swapWorkSelect" style="width:100%; padding:8px; border:1px solid #e5e7eb; border-radius:6px;">
+          <option value="">-- keep current --</option>
+          ${STATE.works.map((w, i) => `<option value="${i}">${escapeHtml(w.Title || w.title || '')}</option>`).join('')}
+        </select>
+      </div>
+      <div style="display:flex; gap:8px;">
+        ${showComputeAlloc ? '' : ''}
+        <button id="saveWorkBtn" style="padding:10px 14px; background:#10b981; color:white; border:none; border-radius:6px; font-weight:600;">Save</button>
+        <button id="deleteWorkBtn" style="padding:10px 14px; background:#ef4444; color:white; border:none; border-radius:6px; font-weight:600;">Delete</button>
+        <button onclick="this.closest('[style*=\\'position: fixed\\']').remove()" style="padding:10px 14px; background:#6b7280; color:white; border:none; border-radius:6px; font-weight:600;">Close</button>
+      </div>
     </div>
   `;
   
@@ -3287,6 +3362,69 @@ function openWorkDetailsModal(item, rehearsalNum) {
       overlay.remove();
     }
   });
+
+  // Save / swap handler
+  document.getElementById('saveWorkBtn').addEventListener('click', async () => {
+    const input = document.getElementById('workTitleInput');
+    const select = document.getElementById('swapWorkSelect');
+    const sel = select.value;
+    const beforeState = deepCopy(STATE.timed);
+
+    if (sel && sel !== '') {
+      // Swap to selected work
+      const workIdx = parseInt(sel);
+      if (!isNaN(workIdx) && STATE.works[workIdx]) {
+        const newTitle = STATE.works[workIdx].Title || STATE.works[workIdx].title || '';
+        STATE.timed.forEach(t => {
+          if (t._index === item.originalIndex) {
+            t.Title = newTitle;
+          }
+        });
+      }
+    } else if (input) {
+      const newTitle = input.value.trim();
+      if (newTitle && newTitle !== item.title) {
+        STATE.timed.forEach(t => {
+          if (t._index === item.originalIndex) {
+            t.Title = newTitle;
+          }
+        });
+      }
+    }
+
+    const afterState = deepCopy(STATE.timed);
+    pushToHistory('edit-title', beforeState, afterState);
+    // Persist and re-render
+    saveTimelineToBackend();
+    renderTimelineEditor();
+    overlay.remove();
+  });
+
+  // Compute allocation button handler (if present) — use preview to avoid overwriting timeline
+  const computeBtn = document.getElementById('computeAllocBtn');
+  if (computeBtn) {
+    computeBtn.addEventListener('click', async () => {
+      computeBtn.disabled = true;
+      computeBtn.textContent = 'Computing...';
+      try {
+        const res = await apiPost('/run_allocation_preview', {});
+        if (res && res.ok && res.allocation) {
+          // Update only client-side allocation cache so we don't overwrite timed/schedule
+          STATE.allocation = res.allocation;
+          const newReq = (computeRequiredFromAllocation(STATE.allocation, item.title)) || 0;
+          const reqEl = document.getElementById('requiredMinutes');
+          if (reqEl) reqEl.textContent = String(newReq);
+        } else {
+          throw new Error((res && res.error) || 'No allocation returned');
+        }
+      } catch (err) {
+        alert('Allocation preview failed: ' + (err.message || err));
+      } finally {
+        computeBtn.disabled = false;
+        computeBtn.textContent = 'Compute allocation';
+      }
+    });
+  }
   
   // Close on overlay click
   overlay.addEventListener('click', (e) => {

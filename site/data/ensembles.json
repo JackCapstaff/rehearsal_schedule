@@ -2,39 +2,26 @@
   {
     "id": "dco",
     "name": "Derby Concert Orchestra",
-    "concerts": []
+    "concerts": [
+      {
+        "id": "concert_bc5883962858",
+        "title": "Derby Concert Orchestra - Concert - Saturday May 16th",
+        "date": "2026-05-16 00:00:00",
+        "time": "19:00:00",
+        "venue": "TBC",
+        "uniform": "TBC",
+        "programme": "The Flying Dutchman\nSymphony No. 2: I. Largo - Allegro moderato\nSymphony No. 2: II. Allegro molto\nSymphony No. 2: III. Adagio\nSymphony No. 2: IV. Allegro vivace\nHorn Concerto  – I. Allegro\nHorn Concerto  – II. Andante\nHorn Concerto  – III. Moderato – Allegro vivace",
+        "other_info": "",
+        "status": "scheduled",
+        "schedule_id": "sched_cf2f447df6",
+        "is_auto_generated": true
+      }
+    ]
   },
   {
     "id": "derwent-brass",
     "name": "Derwent Brass",
-    "concerts": [
-      {
-        "id": "concert_d36a2982a349",
-        "title": "Derwent Brass - Heritage and Innovation",
-        "date": "2026-03-04",
-        "time": "19:30",
-        "venue": "Worksop College",
-        "uniform": "TBC",
-        "programme": "Set 1:\nThe President \nForce of Destiny\nGrandfather's Clock\nLabour and Love\nElgar Variations\n\n\nSet 2:\nFantasy of Joy\nBlue Jeans\nAladdin\nBack to the Future\nHyperdrive",
-        "other_info": "",
-        "status": "scheduled",
-        "schedule_id": "sched_241c206b8b",
-        "is_auto_generated": true
-      },
-      {
-        "id": "concert_1234677589ee",
-        "title": "Derwent Brass - Contest - Sunday March 8th",
-        "date": "2026-03-08",
-        "time": "10:00:00",
-        "venue": "Bedworth Civic Hall",
-        "uniform": "All Blacks",
-        "programme": "Set 1:\nElgar Variations",
-        "other_info": "Draw Time: \nFirst Band: \nParking:",
-        "status": "scheduled",
-        "schedule_id": "sched_241c206b8b",
-        "is_auto_generated": true
-      }
-    ]
+    "concerts": []
   },
   {
     "id": "rotherham-symphony-orchestra",

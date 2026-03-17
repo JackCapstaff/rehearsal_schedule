@@ -131,6 +131,7 @@
             <div style="display:flex; gap:8px; flex-wrap:wrap;">
               <a class="btn secondary" href="{{ url_for('admin_edit_schedule', schedule_id=s.id) }}">Edit</a>
               <a class="btn secondary" href="{{ url_for('schedule_view', schedule_id=s.id) }}">View</a>
+              <a class="btn secondary" href="{{ url_for('admin_schedule_attendance', schedule_id=s.id) }}">Attendance</a>
               <a class="btn secondary" href="{{ url_for('admin_schedule_audit', schedule_id=s.id) }}">Audit</a>
 
               <button class="btn secondary" onclick="document.getElementById('upload-complete-schedule-{{ s.id }}').click();">Upload Complete Schedule</button>

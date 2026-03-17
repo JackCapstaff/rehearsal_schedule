@@ -14,7 +14,10 @@ import datetime as _dt
 
 import numpy as np
 import pandas as pd
-from flask import Flask, render_template, request, redirect, url_for, jsonify, abort, send_file, session
+import io
+import threading
+import csv
+from flask import Flask, render_template, request, redirect, url_for, jsonify, abort, send_file, session, Response
 from werkzeug.security import generate_password_hash, check_password_hash
 from markupsafe import Markup
 import html as _html
@@ -197,6 +200,28 @@ def format_programme(programme_text):
         ''')
     
     return Markup(f'<div style="display:flex; gap:12px; flex-wrap:wrap;">{" ".join(columns_html)}</div>')
+
+
+def _ordinal(n: int) -> str:
+    if 10 <= n % 100 <= 20:
+        suffix = 'th'
+    else:
+        suffix = {1: 'st', 2: 'nd', 3: 'rd'}.get(n % 10, 'th')
+    return f"{n}{suffix}"
+
+
+def format_human_date(date_value) -> str:
+    """Format a date-like value as '16th March 2026'."""
+    if not date_value:
+        return ""
+    try:
+        dt = pd.to_datetime(date_value)
+        day = dt.day
+        month = dt.strftime('%B')
+        year = dt.year
+        return f"{_ordinal(day)} {month} {year}"
+    except Exception:
+        return str(date_value)
 
 
 def schedule_path(schedule_id: str) -> str:
@@ -1302,6 +1327,32 @@ def get_member_recipients(
         seen.add(r["email"])
         unique.append(r)
     return unique
+
+
+def get_ensemble_admin_emails(ensemble_id: str) -> List[str]:
+    """Return emails of users who are marked as admin for a given ensemble (memberships.role=='admin')."""
+    memberships = load_memberships()
+    users_by_id = {u.get("id"): u for u in load_users()}
+    emails = []
+    for m in memberships:
+        if m.get("ensemble_id") != ensemble_id:
+            continue
+        if m.get("role") != "admin":
+            continue
+        uid = m.get("user_id")
+        u = users_by_id.get(uid) or {}
+        email = u.get("email")
+        if email and "@" in email:
+            emails.append(email.strip())
+    # deduplicate
+    return sorted(set(emails))
+
+
+def get_global_admin_emails() -> List[str]:
+    """Return emails of global admins (users with is_admin True)."""
+    users = load_users()
+    emails = [u.get("email").strip() for u in users if u.get("is_admin") and u.get("email") and "@" in u.get("email")]
+    return sorted(set(emails))
 
 
 def _default_notification_subject(ensemble_name: str) -> str:
@@ -2909,6 +2960,47 @@ def api_schedule_run_allocation(schedule_id):
         return jsonify({"ok": False, "error": f"Allocation computation failed: {str(e)}"}), 500
 
 
+@app.post("/api/s/<schedule_id>/run_allocation_preview")
+def api_schedule_run_allocation_preview(schedule_id):
+    """Run allocation computation but don't save results to the schedule file.
+    Returns allocation records and warnings so the client can preview without
+    overwriting server-side timed/schedule data.
+    """
+    r = admin_required_or_403()
+    if r: return r
+
+    s = load_schedule(schedule_id)
+    if not s: abort(404)
+
+    works, rehearsals, _, _ = get_frames(s)
+    G = int(s.get("G", DEFAULT_G))
+
+    # Filter to only include rehearsals where Event Type is "Rehearsal"
+    rehearsals_for_allocation = rehearsals[rehearsals['Event Type'].str.lower() == 'rehearsal'].copy()
+    if len(rehearsals_for_allocation) < 2:
+        return jsonify({"ok": False, "error": f"Need at least 2 'Rehearsal' type events for allocation. Found {len(rehearsals_for_allocation)} rehearsals."}), 400
+
+    try:
+        result = run_allocation_compute(works, rehearsals_for_allocation, G)
+        if result is None:
+            raise ValueError("run_allocation_compute returned None")
+        alloc_df, warnings = result
+        if alloc_df is None:
+            raise ValueError("alloc_df is None after run_allocation_compute")
+        raw_records = alloc_df.to_dict(orient="records")
+        allocation_records = sanitize_df_records(raw_records)
+        if allocation_records is None:
+            allocation_records = []
+        return jsonify({"ok": True, "allocation": allocation_records, "warnings": warnings})
+    except ValueError as e:
+        return jsonify({"ok": False, "error": str(e)}), 400
+    except Exception as e:
+        import traceback
+        error_detail = traceback.format_exc()
+        print(f"[ALLOCATION PREVIEW] Exception: {str(e)}\n{error_detail}")
+        return jsonify({"ok": False, "error": f"Allocation preview failed: {str(e)}"}), 500
+
+
 @app.post("/api/s/<schedule_id>/generate_schedule")
 def api_schedule_generate(schedule_id):
     r = admin_required_or_403()
@@ -3873,6 +3965,28 @@ def api_attendance_respond(schedule_id):
     add_audit_entry(s, action="attendance_response", description=f"{status} for rehearsal {rehearsal_num}", actor=u, meta={"rehearsal": rehearsal_num})
     save_schedule(s)
 
+    # Notify admins that a member has responded to attendance
+    try:
+        # Notify ensemble admins (admins for this ensemble) plus global admins
+        ensemble_id = s.get("ensemble_id")
+        ensemble_admins = get_ensemble_admin_emails(ensemble_id) or []
+        global_admins = get_global_admin_emails() or []
+        admin_emails = sorted(set(ensemble_admins + global_admins))
+        if admin_emails:
+            member_name = user_display_name(u)
+            reh = get_rehearsal_row(s, rehearsal_num) or {}
+            reh_date = reh.get("Date") or "(date TBC)"
+            ensemble = get_ensemble_by_id(ensemble_id) or {}
+            ensemble_name = ensemble.get("name") or ensemble_id
+            subject = f"Attendance updated: {member_name} — {ensemble_name}"
+            html_body = (
+                f"<p>{member_name} marked <strong>{html.escape(status)}</strong> for rehearsal {rehearsal_num} ({html.escape(str(reh_date))}).</p>"
+                f"<p>Schedule: <a href='" + url_for('admin_edit_schedule', schedule_id=s.get('id'), _external=True) + "'>Open schedule</a></p>"
+            )
+            brevo_send_email(admin_emails, subject, html_body, bcc_mode=True)
+    except Exception as e:
+        print(f"[ATTENDANCE] Failed to notify admins: {e}")
+
     return jsonify({"ok": True, "attendance": bucket.get(u.get("id"))})
 
 
@@ -3929,6 +4043,111 @@ def api_attendance_event(schedule_id, rehearsal_num):
         "event_id": rehearsal_num,
         "responses": rows,
     })
+
+
+@app.get('/api/s/<schedule_id>/attendance/summary')
+def api_attendance_summary(schedule_id):
+    r = admin_required_or_403()
+    if r: return r
+    s = load_schedule(schedule_id)
+    if not s: abort(404)
+
+    members = _ensemble_members(s.get('ensemble_id'))
+    rehearsals = s.get('rehearsals', [])
+    # build list of labelled columns (use Rehearsal number order)
+    dates = []
+    reh_order = []
+    for reh in rehearsals:
+        try:
+            rnum = int(reh.get('Rehearsal', -1))
+        except Exception:
+            continue
+        reh_order.append(rnum)
+        # Build a human-friendly column label including rehearsal number / concert and formatted date
+        event_type = (reh.get('Event Type') or reh.get('Event') or '').strip()
+        if not event_type:
+            event_type = reh.get('Event Type') or 'Rehearsal'
+        date_label = format_human_date(reh.get('Date') or reh.get('date') or '')
+        if event_type and event_type.lower().startswith('concert'):
+            title = reh.get('Title') or 'Concert'
+            label = f"Concert ({title}) — {date_label}"
+        else:
+            label = f"Rehearsal {rnum} — {date_label}"
+        dates.append(label)
+
+    att = ensure_attendance(s)
+
+    rows = []
+    for idx, m in enumerate(members):
+        user_id = m.get('user_id')
+        row = {'instrument': m.get('instrument') or '', 'name': m.get('name') or '', 'email': m.get('email') or '', 'responses': {}}
+        for i, reh in enumerate(reh_order):
+            bucket = att.get(str(reh)) or {}
+            resp = bucket.get(user_id) or {}
+            col_label = dates[i] if i < len(dates) else str(safe_date_for_column(reh, rehearsals))
+            row['responses'][col_label] = resp.get('status') if resp.get('status') else ''
+        rows.append(row)
+
+    return jsonify({'ok': True, 'dates': dates, 'rows': rows})
+
+
+def safe_date_for_column(reh_num, rehearsals):
+    for reh in rehearsals:
+        try:
+            if int(reh.get('Rehearsal', -1)) == reh_num:
+                return str(reh.get('Date') or '')
+        except Exception:
+            continue
+    return ''
+
+
+@app.get('/api/s/<schedule_id>/attendance/export')
+def api_attendance_export(schedule_id):
+    r = admin_required_or_403()
+    if r: return r
+    s = load_schedule(schedule_id)
+    if not s: abort(404)
+
+    members = _ensemble_members(s.get('ensemble_id'))
+    rehearsals = s.get('rehearsals', [])
+    reh_order = []
+    dates = []
+    # Build labelled column headers like 'Rehearsal 1 — 16th March 2026' or 'Concert (Title) — 16th March 2026'
+    for reh in rehearsals:
+        try:
+            rnum = int(reh.get('Rehearsal', -1))
+        except Exception:
+            continue
+        reh_order.append(rnum)
+        event_type = (reh.get('Event Type') or reh.get('Event') or '').strip()
+        if not event_type:
+            event_type = reh.get('Event Type') or 'Rehearsal'
+        date_label = format_human_date(reh.get('Date') or reh.get('date') or '')
+        if event_type and event_type.lower().startswith('concert'):
+            title = reh.get('Title') or 'Concert'
+            label = f"Concert ({title}) — {date_label}"
+        else:
+            label = f"Rehearsal {rnum} — {date_label}"
+        dates.append(label)
+
+    att = ensure_attendance(s)
+
+    # Build CSV
+    output = io.StringIO()
+    writer = csv.writer(output)
+    header = ['Instrument','Name','Email'] + dates
+    writer.writerow(header)
+    for idx, m in enumerate(members):
+        row = [m.get('instrument') or '', m.get('name') or '', m.get('email') or '']
+        for i, reh in enumerate(reh_order):
+            bucket = att.get(str(reh)) or {}
+            resp = bucket.get(m.get('user_id')) or {}
+            row.append(resp.get('status') or '')
+        writer.writerow(row)
+
+    csv_data = output.getvalue()
+    output.close()
+    return Response(csv_data, mimetype='text/csv', headers={"Content-Disposition": f"attachment; filename=attendance_{schedule_id}.csv"})
 
 
 def _upcoming_events(schedule: dict) -> List[int]:
@@ -4262,6 +4481,11 @@ def admin_set_schedule_status(schedule_id):
     s["status"] = status
     s["updated_at"] = int(time.time())
     add_audit_entry(s, action="status_change", description=f"Status set to {status}", actor=current_user())
+    # If publishing for the first time, record published_at and ensure followup tracking exists
+    if status == "published" and not s.get("published_at"):
+        s["published_at"] = int(time.time())
+    if "followup_notifications" not in s or not isinstance(s.get("followup_notifications"), dict):
+        s["followup_notifications"] = {}
     save_schedule(s)
 
     if status == "published" and notify_publish:
@@ -4284,6 +4508,15 @@ def admin_schedule_audit(schedule_id):
     ensemble = get_ensemble_by_id(s.get("ensemble_id"))
     log = sorted(s.get("audit_log", []), key=lambda e: e.get("ts", 0), reverse=True)
     return render_template("admin_audit.html", schedule=s, audit_log=log, ensemble=ensemble)
+
+
+@app.get('/admin/s/<schedule_id>/attendance')
+def admin_schedule_attendance(schedule_id):
+    r = admin_required_or_403()
+    if r: return r
+    s = load_schedule(schedule_id)
+    if not s: abort(404)
+    return render_template('admin_attendance.html', schedule_id=schedule_id)
 
 
 @app.get("/admin")
@@ -5629,14 +5862,48 @@ def api_schedule_import_xlsx(schedule_id):
                     
                     default_title = f"{ensemble.get('name', 'Unknown Ensemble')} - Concert - {formatted_date}"
                     
+                    # Prepare sensible defaults: use repertoire from imported works if Programme empty
+                    def _extract_work_titles(df):
+                        if df is None or df.empty:
+                            return []
+                        title_col = None
+                        for candidate in ["Title", "Work", "Work Title", "Piece"]:
+                            if candidate in df.columns:
+                                title_col = candidate
+                                break
+                        if not title_col:
+                            # fallback to first string-like column
+                            for c in df.columns:
+                                if df[c].dtype == object:
+                                    title_col = c
+                                    break
+                        if not title_col:
+                            return []
+                        titles = []
+                        for v in df[title_col].tolist():
+                            if v is None:
+                                continue
+                            s = str(v).strip()
+                            if s:
+                                titles.append(s)
+                        return titles
+
+                    default_programme = "\n".join(_extract_work_titles(df_works))
+                    # Prefer explicit Programme from Excel, otherwise use default_programme
+                    programme_value = reh_row.get("Programme") or default_programme or ""
+                    # Default Venue/Uniform to 'TBC' when not provided
+                    venue_value = reh_row.get("Venue") or "TBC"
+                    uniform_value = reh_row.get("Uniform") or "TBC"
+
                     if existing_concert:
                         # Update existing concert with new data from Excel
                         print(f"[CONCERT CREATE] Updating existing concert: {existing_concert['id']}")
                         existing_concert["title"] = reh_row.get("Concert Title") or existing_concert.get("title", default_title)
                         existing_concert["time"] = reh_row.get("Start Time", existing_concert.get("time", ""))
-                        existing_concert["venue"] = reh_row.get("Venue", existing_concert.get("venue", ""))
-                        existing_concert["uniform"] = reh_row.get("Uniform", existing_concert.get("uniform", ""))
-                        existing_concert["programme"] = reh_row.get("Programme", existing_concert.get("programme", ""))
+                        existing_concert["venue"] = reh_row.get("Venue") or existing_concert.get("venue", venue_value)
+                        existing_concert["uniform"] = reh_row.get("Uniform") or existing_concert.get("uniform", uniform_value)
+                        # Only overwrite programme if Excel provided one, otherwise preserve existing or set default
+                        existing_concert["programme"] = reh_row.get("Programme") or existing_concert.get("programme", programme_value)
                         existing_concert["other_info"] = reh_row.get("Other Info", existing_concert.get("other_info", ""))
                         concert_id = existing_concert["id"]
                         concerts_updated += 1
@@ -5649,9 +5916,9 @@ def api_schedule_import_xlsx(schedule_id):
                             "title": reh_row.get("Concert Title") or default_title,
                             "date": concert_date,
                             "time": reh_row.get("Start Time", ""),
-                            "venue": reh_row.get("Venue", ""),
-                            "uniform": reh_row.get("Uniform", ""),
-                            "programme": reh_row.get("Programme", ""),
+                            "venue": venue_value,
+                            "uniform": uniform_value,
+                            "programme": programme_value,
                             "other_info": reh_row.get("Other Info", ""),
                             "status": "scheduled",
                             "schedule_id": schedule_id,
@@ -7135,6 +7402,173 @@ def conduct_report_view(schedule_id, rehearsal_num):
 # ----------------------------
 # Main
 # ----------------------------
+def run_followup_reminders(dry_run: bool = False) -> dict:
+    """Run follow-up reminder rules across all published schedules.
+
+    Rules implemented:
+      - 1 week after publish: if no attendance responses at all, notify ensemble admins + global admins.
+      - 1 week before each event: remind non-responders and send a summary to admins.
+
+    Returns a summary dict of actions taken.
+    """
+    now = int(time.time())
+    summary = {"schedules_checked": 0, "actions": []}
+
+    for sid in list_schedule_ids():
+        s = load_schedule(sid)
+        if not s or s.get("status") != "published":
+            continue
+        summary["schedules_checked"] += 1
+        ensemble_id = s.get("ensemble_id")
+        ens = get_ensemble_by_id(ensemble_id) or {}
+        ensemble_name = ens.get("name") or ensemble_id
+        fn = s.setdefault("followup_notifications", {})
+
+        # 1 week after publish
+        published_at = s.get("published_at")
+        if published_at and not fn.get("post_publish_week_sent") and now >= (published_at + 7 * 24 * 3600):
+            # determine if any attendance responses exist
+            att = s.get("attendance") or {}
+            any_responses = False
+            for bucket in att.values():
+                if isinstance(bucket, dict):
+                    for v in bucket.values():
+                        if isinstance(v, dict) and v.get("status"):
+                            any_responses = True
+                            break
+                if any_responses:
+                    break
+
+            if not any_responses:
+                recipients = sorted(set(get_ensemble_admin_emails(ensemble_id) + get_global_admin_emails()))
+                if recipients:
+                    subject = f"No attendance responses for {ensemble_name} — follow-up"
+                    body = (
+                        f"<p>Hello,</p>"
+                        f"<p>The schedule '{html.escape(s.get('name') or sid)}' was published one week ago but no attendance responses have been recorded.</p>"
+                        f"<p>Please consider prompting members to confirm attendance.</p>"
+                        f"<p>Open schedule: <a href='{url_for('admin_edit_schedule', schedule_id=sid, _external=True)}'>Open schedule</a></p>"
+                    )
+                    if not dry_run:
+                        brevo_send_email(recipients, subject, body, bcc_mode=True)
+                        fn["post_publish_week_sent"] = now
+                        s["updated_at"] = now
+                        save_schedule(s)
+                    summary["actions"].append({"schedule": sid, "action": "post_publish_week_sent", "recipients": recipients})
+
+        # 1 week before each rehearsal event: remind non-responders and notify admins
+        rehearsals = s.get("rehearsals") or []
+        for reh in rehearsals:
+            try:
+                reh_num = int(reh.get("Rehearsal"))
+            except Exception:
+                continue
+            date_val = reh.get("Date") or reh.get("date")
+            if not date_val:
+                continue
+            try:
+                dt = pd.to_datetime(date_val)
+                event_ts = int(dt.timestamp())
+            except Exception:
+                continue
+
+            # Only consider events between now and one week ahead
+            if now < (event_ts - 7 * 24 * 3600) or now >= event_ts:
+                continue
+
+            pre_sent = fn.setdefault("pre_event_sent", {})
+            if pre_sent.get(str(reh_num)):
+                continue
+
+            # Find non-responders
+            att_bucket = (s.get("attendance") or {}).get(str(reh_num)) or {}
+            members = _ensemble_members(ensemble_id)
+            nonresponders = []
+            for m in members:
+                uid = m.get("user_id")
+                email = m.get("email")
+                if not email:
+                    continue
+                resp = att_bucket.get(uid)
+                if resp and resp.get("status"):
+                    continue
+                nonresponders.append(m)
+
+            if nonresponders:
+                # Send individual reminders to non-responders
+                sent_count = 0
+                for nr in nonresponders:
+                    try:
+                        member_email = nr.get("email")
+                        member_name = nr.get("name") or member_email
+                        lines = [f"- {reh.get('Title') or reh.get('Event Type') or 'Rehearsal'} on {reh.get('Date') or '(date TBC)'} (Rehearsal {reh_num})"]
+                        body = (
+                            f"<p>Hi {html.escape(member_name)},</p>"
+                            f"<p>Please confirm your attendance for the upcoming {html.escape(ensemble_name)} rehearsal:</p>"
+                            "<ul>" + "".join(f"<li>{html.escape(l)}</li>" for l in lines) + "</ul>"
+                            f"<p>Respond via the schedule: <a href='{url_for('schedule_view', schedule_id=sid, _external=True)}'>view schedule</a>.</p>"
+                        )
+                        if not dry_run:
+                            brevo_send_email([member_email], f"Attendance needed for {ensemble_name}", body, bcc_mode=False)
+                        sent_count += 1
+                    except Exception as e:
+                        print(f"[FOLLOWUPS] Failed to send reminder to {nr.get('email')}: {e}")
+
+                # Notify admins with a summary
+                admin_recipients = sorted(set(get_ensemble_admin_emails(ensemble_id) + get_global_admin_emails()))
+                if admin_recipients:
+                    try:
+                        lines = [f"- {nr.get('name') or nr.get('email')}" for nr in nonresponders]
+                        admin_body = (
+                            f"<p>Admins,</p>"
+                            f"<p>The following members have not responded for rehearsal {reh_num} ({html.escape(str(reh.get('Date') or 'TBC'))}):</p>"
+                            "<ul>" + "".join(f"<li>{html.escape(l)}</li>" for l in lines) + "</ul>"
+                            f"<p>Open schedule: <a href='{url_for('admin_edit_schedule', schedule_id=sid, _external=True)}'>Open schedule</a></p>"
+                        )
+                        if not dry_run:
+                            brevo_send_email(admin_recipients, f"Non-responders for rehearsal {reh_num} — {ensemble_name}", admin_body, bcc_mode=True)
+                    except Exception as e:
+                        print(f"[FOLLOWUPS] Failed to notify admins for {sid} rehearsal {reh_num}: {e}")
+
+                # Mark as sent for this rehearsal
+                pre_sent[str(reh_num)] = now
+                s["updated_at"] = now
+                save_schedule(s)
+                summary["actions"].append({"schedule": sid, "action": "pre_event_reminders", "rehearsal": reh_num, "sent_to": sent_count})
+
+    return summary
+
+
+@app.post('/api/cron/run_followups')
+def api_run_followups():
+    r = admin_required_or_403()
+    if r: return r
+    try:
+        summary = run_followup_reminders(dry_run=False)
+        return jsonify({"ok": True, "summary": summary})
+    except Exception as e:
+        print(f"[CRON] Exception during followups run: {e}")
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+def _followups_worker_loop():
+    # Run once on startup, then sleep and run daily.
+    while True:
+        try:
+            print("[FOLLOWUPS] Running scheduled follow-up reminders")
+            run_followup_reminders()
+        except Exception as e:
+            print(f"[FOLLOWUPS] Error in scheduled run: {e}")
+        # Sleep for 24 hours
+        time.sleep(24 * 3600)
+
+
+# Start background thread for scheduled follow-ups
+try:
+    t = threading.Thread(target=_followups_worker_loop, daemon=True)
+    t.start()
+except Exception:
+    print("[FOLLOWUPS] Failed to start followups background thread")
 if __name__ == "__main__":
     # For local dev:
     #   EDIT_TOKEN=... flask --app app run --debug
