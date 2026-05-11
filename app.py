@@ -58,6 +58,170 @@ os.makedirs(DATA_DIR, exist_ok=True)
 SCHEDULES_DIR = os.path.join(DATA_DIR, "schedules")
 os.makedirs(SCHEDULES_DIR, exist_ok=True)
 
+# In-memory timers for attendance batching: keyed by (schedule_id, user_id)
+_attendance_pending_timers = {}
+
+
+def _attendance_schedule_key(schedule_id, user_id):
+    return f"{schedule_id}::{user_id}"
+
+
+def _send_pending_attendance_notifications(schedule_id, user_id):
+    """Send accumulated attendance actions for a single user to admins and clear pending list.
+    This function is intended to be called from a background Timer or synchronously.
+    """
+    try:
+        s = load_schedule(schedule_id)
+        if not s:
+            return
+
+        pending = (s.get("attendance_notifications") or {}).get(str(user_id)) or {}
+        items = pending.get("items", [])
+        if not items:
+            return
+
+        # Compose summary email
+        ensemble = get_ensemble_by_id(s.get("ensemble_id")) or {}
+        ensemble_name = ensemble.get("name") or s.get("ensemble_id")
+        member = next((u for u in load_users() if u.get("id") == user_id), {})
+        member_name = user_display_name(member)
+
+        html_lines = [f"<p>{member_name} performed the following attendance actions:</p>", "<ul>"]
+        for it in items:
+            reh = it.get("rehearsal")
+            status = html.escape(it.get("status") or "")
+            note = html.escape(it.get("note") or "")
+            ts = _dt.datetime.utcfromtimestamp(it.get("ts", 0)).isoformat() if it.get("ts") else ""
+            html_lines.append(f"<li>Rehearsal {reh}: <strong>{status}</strong> {('— ' + note) if note else ''} <em>({ts})</em></li>")
+        html_lines.append("</ul>")
+        html_body = "\n".join(html_lines)
+
+        # Send to ensemble and global admins
+        ensemble_admins = get_ensemble_admin_emails(s.get("ensemble_id")) or []
+        global_admins = get_global_admin_emails() or []
+        admin_emails = sorted(set(ensemble_admins + global_admins))
+        if admin_emails:
+            subject = f"Attendance updates: {member_name} — {ensemble_name}"
+            brevo_send_email(admin_emails, subject, html_body, bcc_mode=True)
+
+        # Clear pending for this user
+        notif = s.get("attendance_notifications") or {}
+        if str(user_id) in notif:
+            del notif[str(user_id)]
+            s["attendance_notifications"] = notif
+            s["updated_at"] = int(time.time())
+            try:
+                save_schedule(s)
+            except Exception:
+                pass
+    finally:
+        # Clean up in-memory timer
+        key = _attendance_schedule_key(schedule_id, user_id)
+        t = _attendance_pending_timers.pop(key, None)
+        try:
+            if t and hasattr(t, "cancel"):
+                t.cancel()
+        except Exception:
+            pass
+
+
+def _queue_attendance_notification(schedule_id, user_id, rehearsal_num, status, note):
+    """Add an attendance action to pending notifications for a user and (re)schedule the send.
+    We wait 5 minutes after the last action before sending a batched summary.
+    """
+    now_ts = int(time.time())
+    s = load_schedule(schedule_id)
+    if not s:
+        return
+
+    notif = s.get("attendance_notifications") or {}
+    user_key = str(user_id)
+    entry = {"rehearsal": rehearsal_num, "status": status, "note": note, "ts": now_ts}
+    if user_key not in notif:
+        notif[user_key] = {"items": [entry], "scheduled_at": now_ts + 300}
+    else:
+        notif[user_key]["items"].append(entry)
+        notif[user_key]["scheduled_at"] = now_ts + 300
+
+    s["attendance_notifications"] = notif
+    s["updated_at"] = now_ts
+    try:
+        save_schedule(s)
+    except Exception:
+        pass
+
+    # (Re)start in-memory timer for this scheduled send
+    key = _attendance_schedule_key(schedule_id, user_id)
+    prev = _attendance_pending_timers.get(key)
+    if prev:
+        try:
+            prev.cancel()
+        except Exception:
+            pass
+
+    t = threading.Timer(300, lambda: _send_pending_attendance_notifications(schedule_id, user_id))
+    _attendance_pending_timers[key] = t
+    t.daemon = True
+    t.start()
+
+
+def _flush_user_pending_notifications(user_id: str):
+    """Find any schedules with pending attendance_notifications for `user_id` and send them now."""
+    try:
+        for sid in list_schedule_ids():
+            s = load_schedule(sid)
+            if not s:
+                continue
+            notif = (s.get("attendance_notifications") or {}).get(str(user_id))
+            if notif and notif.get("items"):
+                try:
+                    _send_pending_attendance_notifications(sid, user_id)
+                except Exception:
+                    # best-effort: keep trying others
+                    pass
+    except Exception:
+        pass
+
+
+# ----------------------------
+# App
+# ----------------------------
+app = Flask(__name__)
+if FlaskInstrumentor is not None:
+    try:
+        FlaskInstrumentor().instrument_app(app)
+    except Exception:
+        pass
+app.secret_key = os.environ.get("SECRET_KEY", "dev-change-me")  # set in Azure App Settings
+
+
+@app.post('/internal/process_due_notifications')
+def internal_process_due_notifications():
+    """Process any due attendance notifications across all schedules.
+    Protected by edit token: call with ?token=<EDIT_TOKEN> or X-Edit-Token header.
+    Intended to be invoked by a scheduler (Heroku Scheduler or similar).
+    """
+    _require_edit_token_or_abort()
+    now_ts = int(time.time())
+    processed = 0
+    try:
+        for sid in list_schedule_ids():
+            s = load_schedule(sid)
+            if not s:
+                continue
+            notif = s.get("attendance_notifications") or {}
+            for user_key, data in list(notif.items()):
+                scheduled_at = data.get("scheduled_at") or 0
+                if scheduled_at and int(scheduled_at) <= now_ts:
+                    try:
+                        _send_pending_attendance_notifications(sid, int(user_key))
+                        processed += 1
+                    except Exception:
+                        pass
+        return jsonify({"ok": True, "processed": processed})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
 # If PROJECT_FILE is not explicitly set, store it in the persistent DATA_DIR.
 PROJECT_FILE = os.environ.get("PROJECT_FILE", os.path.join(DATA_DIR, "project.json"))
 EDIT_TOKEN = os.environ.get("EDIT_TOKEN", "changeme")  # set in Azure App Settings!
@@ -87,19 +251,6 @@ BREVO_FROM_EMAIL = os.environ.get("BREVO_FROM_EMAIL", "rehearsals@jackcapstaff.c
 BREVO_FROM_NAME = os.environ.get("BREVO_FROM_NAME", "Rehearsal Schedule").strip()
 BREVO_PRIMARY_TO = os.environ.get("BREVO_PRIMARY_TO", BREVO_FROM_EMAIL).strip()
 AUDIT_LOG_LIMIT = 500
-
-
-
-# ----------------------------
-# App
-# ----------------------------
-app = Flask(__name__)
-if FlaskInstrumentor is not None:
-    try:
-        FlaskInstrumentor().instrument_app(app)
-    except Exception:
-        pass
-app.secret_key = os.environ.get("SECRET_KEY", "dev-change-me")  # set in Azure App Settings
 
 # Custom Jinja filter for UK date format with ordinal suffix
 @app.template_filter('uk_date_format')
@@ -235,8 +386,30 @@ def list_schedule_ids() -> list[str]:
     )
 
 def load_schedule(schedule_id: str) -> dict:
-    p = schedule_path(schedule_id)
-    s = read_json(p, None) or {}  # see safe read_json note below
+    # Try DB first (if configured), otherwise fall back to file storage
+    try:
+        from data_access import get_schedule, db_available
+    except Exception:
+        get_schedule = None
+        db_available = lambda: False
+
+    if db_available():
+        try:
+            db_result = get_schedule(schedule_id)
+        except Exception:
+            db_result = None
+        if db_result is not None:
+            s = db_result
+            print(f"[LOAD] schedule={schedule_id} source=DB rehearsals={len(s.get('rehearsals', []))} timed={len(s.get('timed', []))}")
+        else:
+            # Fallback to file storage if DB has no entry for this schedule
+            p = schedule_path(schedule_id)
+            s = read_json(p, None) or {}
+            print(f"[LOAD] schedule={schedule_id} source=FILE (fallback)")
+    else:
+        p = schedule_path(schedule_id)
+        s = read_json(p, None) or {}  # see safe read_json note below
+        print(f"[LOAD] schedule={schedule_id} source=FILE (db disabled)")
     
     # Ensure the schedule has an id field (derive from filename if missing)
     if "id" not in s:
@@ -289,7 +462,22 @@ def load_schedule(schedule_id: str) -> dict:
 def save_schedule(s: dict):
     if "id" not in s:
         raise ValueError("Schedule missing id")
+    # Always write the canonical JSON file for backup and compatibility
     write_json_atomic(schedule_path(s["id"]), s)
+
+    # If DB is available, also persist to Postgres (upsert). Errors here
+    # should not prevent the JSON save, but we log them for debugging.
+    try:
+        from data_access import db_available, write_schedule
+    except Exception:
+        db_available = lambda: False
+        write_schedule = None
+
+    if db_available():
+        try:
+            write_schedule(s)
+        except Exception as ex:
+            print(f"[SAVE] DB write failed for {s.get('id')}: {ex}")
 
 def migrate_unnamed_columns_to_day():
     """Rename 'Unnamed: 2' to 'Day' in all schedules"""
@@ -2974,9 +3162,21 @@ def api_schedule_run_allocation_preview(schedule_id):
 
     works, rehearsals, _, _ = get_frames(s)
     G = int(s.get("G", DEFAULT_G))
+    # Debug: show rehearsal frame structure before filtering
+    try:
+        print(f"[ALLOCATION DEBUG] rehearsals columns: {list(rehearsals.columns)}")
+        print(f"[ALLOCATION DEBUG] rehearsals head:\n{rehearsals.head().to_dict(orient='records')}")
+        if 'Event Type' in rehearsals.columns:
+            print(f"[ALLOCATION DEBUG] Event Type unique values: {rehearsals['Event Type'].dropna().unique().tolist()}")
+    except Exception as _:
+        pass
 
     # Filter to only include rehearsals where Event Type is "Rehearsal"
-    rehearsals_for_allocation = rehearsals[rehearsals['Event Type'].str.lower() == 'rehearsal'].copy()
+    # Use safe string operations in case values are missing
+    if 'Event Type' in rehearsals.columns:
+        rehearsals_for_allocation = rehearsals[rehearsals['Event Type'].astype(str).str.strip().str.lower() == 'rehearsal'].copy()
+    else:
+        rehearsals_for_allocation = rehearsals[[]]
     if len(rehearsals_for_allocation) < 2:
         return jsonify({"ok": False, "error": f"Need at least 2 'Rehearsal' type events for allocation. Found {len(rehearsals_for_allocation)} rehearsals."}), 400
 
@@ -3965,27 +4165,11 @@ def api_attendance_respond(schedule_id):
     add_audit_entry(s, action="attendance_response", description=f"{status} for rehearsal {rehearsal_num}", actor=u, meta={"rehearsal": rehearsal_num})
     save_schedule(s)
 
-    # Notify admins that a member has responded to attendance
+    # Queue batched notification for admins (debounced 5 minutes after last action by this user)
     try:
-        # Notify ensemble admins (admins for this ensemble) plus global admins
-        ensemble_id = s.get("ensemble_id")
-        ensemble_admins = get_ensemble_admin_emails(ensemble_id) or []
-        global_admins = get_global_admin_emails() or []
-        admin_emails = sorted(set(ensemble_admins + global_admins))
-        if admin_emails:
-            member_name = user_display_name(u)
-            reh = get_rehearsal_row(s, rehearsal_num) or {}
-            reh_date = reh.get("Date") or "(date TBC)"
-            ensemble = get_ensemble_by_id(ensemble_id) or {}
-            ensemble_name = ensemble.get("name") or ensemble_id
-            subject = f"Attendance updated: {member_name} — {ensemble_name}"
-            html_body = (
-                f"<p>{member_name} marked <strong>{html.escape(status)}</strong> for rehearsal {rehearsal_num} ({html.escape(str(reh_date))}).</p>"
-                f"<p>Schedule: <a href='" + url_for('admin_edit_schedule', schedule_id=s.get('id'), _external=True) + "'>Open schedule</a></p>"
-            )
-            brevo_send_email(admin_emails, subject, html_body, bcc_mode=True)
+        _queue_attendance_notification(s.get("id"), u.get("id"), rehearsal_num, status, note)
     except Exception as e:
-        print(f"[ATTENDANCE] Failed to notify admins: {e}")
+        print(f"[ATTENDANCE] Failed to queue notification: {e}")
 
     return jsonify({"ok": True, "attendance": bucket.get(u.get("id"))})
 
@@ -4295,9 +4479,36 @@ def schedule_view(schedule_id):
                 concert_date = pd.to_datetime(c.get("date", "")).date() if c.get("date") else None
                 concerts_with_dates.append((concert_date, c))
             except:
-                concerts_with_dates.append((None, c))
-        concerts_with_dates.sort(key=lambda x: x[0] if x[0] else "")
-        linked_concerts = [c for _, c in concerts_with_dates]
+                # Fallback: keep raw value (could be string) but mark as None-equivalent
+                concerts_with_dates.append((c.get("date") if isinstance(c.get("date"), str) else None, c))
+
+        # Normalize sort key so we never compare mixed types (str vs date)
+        def _concert_key(item):
+            d = item[0]
+            # Dates and datetimes -> ISO string, sort before unknowns
+            try:
+                if isinstance(d, (_dt.date, _dt.datetime)):
+                    return (0, d.isoformat())
+            except Exception:
+                pass
+            # Strings that look like dates or raw date strings
+            if isinstance(d, str) and d:
+                return (0, d)
+            # None or empty -> sort last
+            return (1, "")
+
+        concerts_with_dates.sort(key=_concert_key)
+        # Preserve order but remove duplicate concerts with same id
+        seen = set()
+        deduped = []
+        for _, c in concerts_with_dates:
+            cid = c.get("id") or c.get("concert_id") or None
+            if cid and cid in seen:
+                continue
+            if cid:
+                seen.add(cid)
+            deduped.append(c)
+        linked_concerts = deduped
 
     # Get timed data and clean it to ensure sections are populated
     timed_data = clean_timed_data(s.get("timed", []))
@@ -5051,6 +5262,13 @@ def login_post():
 
 @app.get("/logout")
 def logout_view():
+    # If the user has any pending attendance notifications, flush them immediately
+    u = current_user()
+    if u:
+        try:
+            _flush_user_pending_notifications(u.get("id"))
+        except Exception:
+            pass
     session.clear()
     return redirect(url_for("login_view"))
 
@@ -5104,7 +5322,8 @@ def forgot_password_post():
         text_body = f"Reset your password: {reset_link}\nThis link expires in {int(RESET_TOKEN_EXPIRY_SECONDS/60)} minutes."
 
         try:
-            brevo_send_email([user.get('email')], subject, html_body, text_body)
+            # Password reset must go only to the user (no primary/bcc routing)
+            brevo_send_email([user.get('email')], subject, html_body, text_body, bcc_mode=False)
         except Exception:
             app.logger.exception("Failed to send password reset email")
 
@@ -6011,12 +6230,60 @@ def api_schedule_import_complete(schedule_id):
     events_sheet = pick_sheet(sheet_names, ["event", "rehears"])
     schedule_sheet = pick_sheet(sheet_names, ["schedul", "work", "timed"])
 
+    # If either sheet missing, attempt to handle single-sheet exports that contain
+    # both rehearsal rows and timed schedule rows (legacy format). If there is
+    # exactly one sheet and it looks like a timed schedule, derive events by
+    # grouping on `Rehearsal` and taking the first row per rehearsal.
     if not events_sheet or not schedule_sheet:
-        return jsonify({
-            "ok": False,
-            "error": "Excel file must contain 'events' and 'schedule' sheets.",
-            "sheets_found": sheet_names,
-        }), 400
+        if len(sheet_names) == 1:
+            try:
+                df_all = pd.read_excel(xls, sheet_name=sheet_names[0])
+                cols = [str(c).strip().lower() for c in df_all.columns]
+                # Heuristics: must have a Rehearsal column and either Title/Work
+                # or Time in Rehearsal/Duration columns to be treated as schedule
+                if any(c in cols for c in ("rehearsal", "rehearsal #")) and ("title" in cols or "work" in cols or "time in rehearsal" in cols or "rehearsal time (minutes)" in cols):
+                    # build schedule from full sheet
+                    schedule_sheet = sheet_names[0]
+                    events_sheet = sheet_names[0]
+                    df_schedule = df_all.copy()
+                    # derive events by taking first row per rehearsal
+                    if "Rehearsal" not in df_all.columns and "rehearsal" in cols:
+                        # fix capitalization mismatch by finding the actual col name
+                        for c in df_all.columns:
+                            if str(c).strip().lower() == "rehearsal":
+                                df_all = df_all.rename(columns={c: "Rehearsal"})
+                                break
+                    # ensure Date column present (try common variants)
+                    date_col = None
+                    for candidate in ("Date", "date", "Rehearsal Date", "rehearsal_date"):
+                        if candidate in df_all.columns:
+                            date_col = candidate
+                            break
+                    # create events frame: first row per rehearsal
+                    if date_col is None:
+                        # fallback: use distinct rehearsals with empty dates
+                        df_events = df_all[[c for c in df_all.columns if str(c).strip().lower() in ("rehearsal",)]].drop_duplicates()
+                    else:
+                        df_events = df_all[["Rehearsal", date_col] + [c for c in df_all.columns if str(c).strip().lower() in ("start time","start","start_time","start time")]]
+                        df_events = df_events.groupby("Rehearsal", dropna=False, as_index=False).first()
+                        # normalize column name to Date/Start Time
+                        if date_col != "Date":
+                            df_events = df_events.rename(columns={date_col: "Date"})
+                    # assign df_events/df_schedule and continue
+                else:
+                    return jsonify({
+                        "ok": False,
+                        "error": "Excel file must contain 'events' and 'schedule' sheets.",
+                        "sheets_found": sheet_names,
+                    }), 400
+            except Exception as e:
+                return jsonify({"ok": False, "error": f"Could not parse single-sheet schedule: {e}", "sheets_found": sheet_names}), 400
+        else:
+            return jsonify({
+                "ok": False,
+                "error": "Excel file must contain 'events' and 'schedule' sheets.",
+                "sheets_found": sheet_names,
+            }), 400
 
     # Load dataframes
     try:

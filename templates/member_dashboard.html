@@ -83,6 +83,9 @@
                             <button onclick="event.stopPropagation(); openEditConcertModal('{{ concert.id }}', '{{ concert.ensemble_id }}')" class="btn btn-sm" style="background-color: #198754; color: white; padding: 6px 12px; border: none; border-radius: 4px; cursor: pointer;">
                                 <i class="bi bi-music-note"></i> Edit Concert
                             </button>
+                            <form method="post" action="{{ url_for('admin_delete_concert', ensemble_id=concert.ensemble_id, concert_id=concert.id) }}" onsubmit="event.stopPropagation(); return confirm('Delete concert on {{ concert.date }}?');" style="margin:0;">
+                              <button type="submit" class="btn btn-sm" style="background-color:#dc3545; color:white; padding:6px 12px; border-radius:4px; border:none; cursor:pointer;">Delete</button>
+                            </form>
                             {% endif %}
                         </div>
                         {% endif %}
@@ -407,6 +410,28 @@ console.log('Total concerts from server:', concertsData.length);
 console.log('Concert dates:', concertsData.map(c => ({ id: c.id, title: c.title, date: c.date, status: c.status })));
 
 let rehearsalsData = [];
+
+// Normalize concert dates to YYYY-MM-DD to avoid timezone/date-shift issues in the calendar
+try {
+    for (let i = 0; i < concertsData.length; i++) {
+        const c = concertsData[i];
+        if (!c || !c.date) continue;
+        try {
+            const d = new Date(c.date);
+            if (!isNaN(d.getTime())) {
+                concertsData[i].date = d.toISOString().split('T')[0];
+            } else {
+                // Try parsing as plain date string (YYYY-MM-DD)
+                concertsData[i].date = String(c.date).split('T')[0];
+            }
+        } catch (e) {
+            concertsData[i].date = String(c.date).split('T')[0];
+        }
+    }
+    console.log('Normalized concert dates:', concertsData.map(c => ({ id: c.id, date: c.date })));
+} catch (e) {
+    console.error('Error normalizing concert dates:', e);
+}
 let currentMonthOffset = 0; // Will be initialized to 0 to show current month
 
 // Show concert details in modal
@@ -615,7 +640,9 @@ function renderMonth(date) {
     for (let i = 0; i < 42; i++) {
         const isOtherMonth = currentDate.getMonth() !== month;
         const isPastDay = currentDate < today;
-        const dateStr = currentDate.toISOString().split('T')[0];
+        // Build local YYYY-MM-DD to avoid UTC timezone shifts
+        const pad = (n) => String(n).padStart(2, '0');
+        const dateStr = `${currentDate.getFullYear()}-${pad(currentDate.getMonth()+1)}-${pad(currentDate.getDate())}`;
         const isToday = currentDate.getTime() === today.getTime();
         // Extract rehearsals from the response object
         const rehearsals = rehearsalsData.rehearsals || rehearsalsData.events || rehearsalsData || [];

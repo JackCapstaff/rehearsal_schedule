@@ -4,16 +4,16 @@
     "name": "Derby Concert Orchestra",
     "concerts": [
       {
-        "id": "concert_bc5883962858",
+        "id": "concert_2bdcd52e8f72",
         "title": "Derby Concert Orchestra - Concert - Saturday May 16th",
-        "date": "2026-05-16 00:00:00",
+        "date": "2026-05-16",
         "time": "19:00:00",
-        "venue": "TBC",
-        "uniform": "TBC",
-        "programme": "The Flying Dutchman\nSymphony No. 2: I. Largo - Allegro moderato\nSymphony No. 2: II. Allegro molto\nSymphony No. 2: III. Adagio\nSymphony No. 2: IV. Allegro vivace\nHorn Concerto  – I. Allegro\nHorn Concerto  – II. Andante\nHorn Concerto  – III. Moderato – Allegro vivace",
+        "venue": "Wirksworth",
+        "uniform": "Concert Blacks",
+        "programme": "Set 1:\nThe Flying Dutchman\nHorn Concerto\n\nSet 2:\nSymphony No. 2: I. Largo - Allegro moderato\nSymphony No. 2: II. Allegro molto\nSymphony No. 2: III. Adagio\nSymphony No. 2: IV. Allegro vivace",
         "other_info": "",
         "status": "scheduled",
-        "schedule_id": "sched_cf2f447df6",
+        "schedule_id": "sched_2077604601",
         "is_auto_generated": true
       }
     ]

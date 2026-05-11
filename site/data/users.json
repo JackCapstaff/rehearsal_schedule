@@ -8,7 +8,9 @@
     "first_name": "Jack",
     "last_name": "Capstaff",
     "instrument": "Conductor",
-    "name": "Jack Capstaff"
+    "name": "Jack Capstaff",
+    "reset_token": "93001d540bc047288e2aebf7a20adefb",
+    "reset_expires": 1778489701
   },
   {
     "id": "4a729632800e4901849ad39452dde329",
@@ -24,7 +26,7 @@
   {
     "id": "9fa5f65b93314f8bbc9b7bc684890092",
     "email": "jackcapstaff@googlemail.com",
-    "password_hash": "scrypt:32768:8:1$knoSxpyjJUlbVflI$d74088c807d44bf1c6674c5fdeac9a0a615329a4ada158e69ee8fddc30f5d01ca1b29cc4998c03ea5e3d9b0e709cb3a9af65787f1f22c47714ecaee087f96b4c",
+    "password_hash": "scrypt:32768:8:1$bfyxlDrTKa7hO0ys$714e863d8a18662c093b624c5f773710aa4be957d20a113e4b0bbc2f87c7b87b2b712746114e85bdb0cb900c2b554e58a591828963350cc175d2954845a62e52",
     "is_admin": false,
     "created_at": 1769165508,
     "first_name": "William",

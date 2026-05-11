@@ -7,3 +7,10 @@ requests>=2.31
 markupsafe>=2.1
 reportlab>=4.0
 gunicorn>=21.2
+SQLAlchemy
+alembic
+Flask-Migrate
+psycopg2-binary
+SQLAlchemy
+psycopg2-binary
+alembic
