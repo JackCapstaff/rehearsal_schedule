@@ -37,21 +37,29 @@ h1, h2, h3, h4, h5, h6 {
   line-height: 1.1;
 }
 
-header {
-  background: linear-gradient(135deg, #2e3842 0%, #394553 100%);
-  color: #fff;
-  box-shadow: 0 6px 20px rgba(36, 48, 63, 0.22);
-}
-
-header a {
-  color: #f4e6cf;
-  text-decoration: none;
+#page-wrapper {
+  min-height: 100vh;
 }
 
 .wrap {
   max-width: 1800px;
   margin: 0 auto;
   padding: 18px;
+}
+
+.scheduler-topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.scheduler-topbar__actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
 }
 
 .card {
